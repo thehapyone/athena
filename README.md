@@ -328,7 +328,7 @@ Optional `filters`: `source_type` (list), `external_id` (inclusion list),
 | `KNOWLEDGE_RETRIEVAL_MODE` | no | `hybrid` | `hybrid` or `vector` |
 | `KNOWLEDGE_DB_SCHEMA` | no | `knowledge` | Lowercase SQL identifier |
 | `KNOWLEDGE_MAX_DOCUMENT_BYTES` | no | `8000000` | Per-document UTF-8 size limit, also bounds converted text |
-| `KNOWLEDGE_MAX_UPLOAD_BYTES` | no | `20971520` | Largest accepted upload; configurable from 1 KiB through the 20 MiB deployment cap |
+| `KNOWLEDGE_MAX_UPLOAD_BYTES` | no | `52428800` | Largest accepted upload; configurable from 1 KiB through the 50 MiB deployment cap |
 | `KNOWLEDGE_MAX_FILENAME_CHARACTERS` | no | `255` | Longest stored file name |
 | `KNOWLEDGE_SOURCE_STORAGE_DIR` | no | `/var/lib/athena/sources` | Absolute path for retained originals; must be a writable durable mount |
 | `DOCLING_BASE_URL` | no | – | docling-serve base, e.g. `http://docling:5001`. Unset disables PDF/Office uploads |

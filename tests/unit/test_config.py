@@ -97,7 +97,7 @@ def test_trailing_slash_is_stripped_from_embedding_url(base_env: dict[str, str])
 def test_upload_and_conversion_defaults(base_env: dict[str, str]) -> None:
     settings = Settings.from_env(base_env)
 
-    assert settings.max_upload_bytes == 20 * 1024 * 1024
+    assert settings.max_upload_bytes == 50 * 1024 * 1024
     assert settings.max_filename_characters == 255
     assert settings.docling_base_url == ""
     assert settings.docling_timeout_seconds == 660
@@ -129,7 +129,7 @@ def test_upload_limits_are_bounded(base_env: dict[str, str]) -> None:
         Settings.from_env(
             {
                 **base_env,
-                "KNOWLEDGE_MAX_UPLOAD_BYTES": str(20 * 1024 * 1024 + 1),
+                "KNOWLEDGE_MAX_UPLOAD_BYTES": str(50 * 1024 * 1024 + 1),
             }
         )
 
@@ -140,7 +140,7 @@ def test_redacted_settings_never_include_secrets(base_env: dict[str, str]) -> No
     redacted = settings.redacted()
 
     assert redacted["docling_base_url"] == "http://docling:5001"
-    assert redacted["max_upload_bytes"] == 20 * 1024 * 1024
+    assert redacted["max_upload_bytes"] == 50 * 1024 * 1024
     serialized = str(redacted)
     assert settings.api_token not in serialized
     assert settings.embedding_api_key not in serialized
