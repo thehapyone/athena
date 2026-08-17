@@ -86,7 +86,10 @@ async def test_concurrent_writers_of_one_key_all_succeed(
     renames. A temp name derived from the key made them share one file, and every
     rename after the first failed with ENOENT.
     """
-    writers = 20
+    # Keep this below the smallest executor size used by supported Python
+    # runtimes. Every worker blocks in fsync until all writers arrive; asking
+    # for more writers than the executor can run would deadlock the harness.
+    writers = 4
     store = LocalFileSourceStore(tmp_path)
     key = storage_key(DOCUMENT_ID)
     content = b"%PDF-1.7 " + bytes(5 * 1024 * 1024)
