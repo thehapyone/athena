@@ -102,6 +102,7 @@ application, then send the resulting text or files to Athena.
 
 - See the interactive API reference at `/docs` on your running Athena instance.
 - Read the [API Reference](docs/api.md) for supported endpoints and requests.
+- Start with the [Python and TypeScript agent examples](examples/README.md).
 - Read [Architecture](docs/architecture.md) for deployment, configuration, and
   lifecycle details.
 - Read [Contributing](CONTRIBUTING.md) for local development.
