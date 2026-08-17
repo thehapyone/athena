@@ -1,4 +1,4 @@
-"""Versioned request/response contract for the knowledge service."""
+"""Versioned request/response contract for Athena."""
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -83,7 +83,7 @@ class JobResponse(BaseModel):
 
 
 class SourceItem(BaseModel):
-    """One selectable knowledge source."""
+    """One selectable document source."""
 
     external_id: str
     title: str

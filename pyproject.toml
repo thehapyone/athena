@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "athena"
 version = "0.1.0"
-description = "Open-source document ingestion and hybrid retrieval engine backed by PostgreSQL/pgvector"
+description = "Document ingestion and hybrid retrieval engine backed by PostgreSQL/pgvector"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",

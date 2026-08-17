@@ -22,18 +22,18 @@ from tests.fakes import (
 API_TOKEN = "test-service-token-0123456789"
 
 BASE_ENV = {
-    "KNOWLEDGE_DATABASE_URL": "postgresql://user:pass@db:5432/knowledge",
-    "KNOWLEDGE_API_TOKEN": API_TOKEN,
-    "KNOWLEDGE_EMBEDDING_BASE_URL": "https://example-resource.cognitiveservices.azure.com/openai/v1",
-    "KNOWLEDGE_EMBEDDING_API_KEY": "embedding-key",
-    "KNOWLEDGE_EMBEDDING_MODEL": "text-embedding-3-large",
-    "KNOWLEDGE_EMBEDDING_DIMENSION": "12",
-    "KNOWLEDGE_CHUNK_SIZE": "128",
-    "KNOWLEDGE_CHUNK_OVERLAP": "16",
-    "KNOWLEDGE_DEFAULT_TOP_K": "5",
-    "KNOWLEDGE_MAX_TOP_K": "20",
-    "KNOWLEDGE_RETRIEVAL_MODE": "vector",
-    "KNOWLEDGE_MAX_DOCUMENT_BYTES": "4096",
+    "ATHENA_DATABASE_URL": "postgresql://user:pass@db:5432/athena",
+    "ATHENA_API_TOKEN": API_TOKEN,
+    "ATHENA_EMBEDDING_BASE_URL": "https://example-resource.cognitiveservices.azure.com/openai/v1",
+    "ATHENA_EMBEDDING_API_KEY": "embedding-key",
+    "ATHENA_EMBEDDING_MODEL": "text-embedding-3-large",
+    "ATHENA_EMBEDDING_DIMENSION": "12",
+    "ATHENA_CHUNK_SIZE": "128",
+    "ATHENA_CHUNK_OVERLAP": "16",
+    "ATHENA_DEFAULT_TOP_K": "5",
+    "ATHENA_MAX_TOP_K": "20",
+    "ATHENA_RETRIEVAL_MODE": "vector",
+    "ATHENA_MAX_DOCUMENT_BYTES": "4096",
 }
 
 
@@ -127,7 +127,7 @@ async def client(settings: Settings, runtime_factory) -> AsyncIterator[AsyncClie
     app = create_app(settings, runtime_factory=runtime_factory)
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://knowledge") as http_client:
+        async with AsyncClient(transport=transport, base_url="http://athena") as http_client:
             http_client.app = app  # type: ignore[attr-defined]
             yield http_client
 

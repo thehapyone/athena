@@ -1,0 +1,84 @@
+name: athena
+
+services:
+  athena:
+    build:
+      context: .
+    image: athena:local
+    init: true
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      docling:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ATHENA_DATABASE_URL: postgresql://athena:${ATHENA_POSTGRES_PASSWORD:?Set ATHENA_POSTGRES_PASSWORD in .env}@database:5432/athena
+      ATHENA_API_TOKEN: ${ATHENA_API_TOKEN:?Set ATHENA_API_TOKEN in .env}
+      ATHENA_EMBEDDING_BASE_URL: ${ATHENA_EMBEDDING_BASE_URL:?Set ATHENA_EMBEDDING_BASE_URL in .env}
+      ATHENA_EMBEDDING_API_KEY: ${ATHENA_EMBEDDING_API_KEY:?Set ATHENA_EMBEDDING_API_KEY in .env}
+      ATHENA_EMBEDDING_MODEL: ${ATHENA_EMBEDDING_MODEL:?Set ATHENA_EMBEDDING_MODEL in .env}
+      ATHENA_EMBEDDING_DIMENSION: ${ATHENA_EMBEDDING_DIMENSION:-1536}
+      ATHENA_MAX_UPLOAD_BYTES: ${ATHENA_MAX_UPLOAD_BYTES:-52428800}
+      ATHENA_RETRIEVAL_MODE: ${ATHENA_RETRIEVAL_MODE:-hybrid}
+      ATHENA_LOG_LEVEL: ${ATHENA_LOG_LEVEL:-INFO}
+      ATHENA_SOURCE_STORAGE_DIR: /var/lib/athena/sources
+      DOCLING_BASE_URL: ${DOCLING_BASE_URL:-http://docling:5001}
+      DOCLING_TIMEOUT_SECONDS: ${DOCLING_TIMEOUT_SECONDS:-660}
+    volumes:
+      - athena-source-data:/var/lib/athena/sources
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  database:
+    image: pgvector/pgvector:pg17
+    init: true
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: athena
+      POSTGRES_USER: athena
+      POSTGRES_PASSWORD: ${ATHENA_POSTGRES_PASSWORD:?Set ATHENA_POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - athena-db-data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U athena -d athena"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu:v1.30.0
+    init: true
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_MAX_SYNC_WAIT: "600"
+    tmpfs:
+      - /tmp:rw,exec,size=512m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=4).status == 200 else 1)\""]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  athena-db-data:
+  athena-source-data:

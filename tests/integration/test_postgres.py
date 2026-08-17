@@ -1,12 +1,12 @@
 """End-to-end ingestion and retrieval against a real PostgreSQL/pgvector database.
 
-Skipped unless ``KNOWLEDGE_TEST_DATABASE_URL`` points at a database with the
+Skipped unless ``ATHENA_TEST_DATABASE_URL`` points at a database with the
 ``vector`` extension available. Embeddings stay deterministic so the test needs
 no embedding endpoint.
 
     docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=postgres \\
-        --name knowledge-test-db pgvector/pgvector:pg17
-    KNOWLEDGE_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/postgres \\
+        --name athena-test-db pgvector/pgvector:pg17
+    ATHENA_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/postgres \\
         .venv/bin/python -m pytest tests/integration -q
 """
 
@@ -28,10 +28,10 @@ from app.repository import JobRecord, PostgresRepository
 from app.storage import ORIGINAL_VARIANT, PREVIEW_VARIANT, LocalFileSourceStore, storage_key
 from tests.fakes import VOCAB, DeterministicEmbedding
 
-DATABASE_URL = os.environ.get("KNOWLEDGE_TEST_DATABASE_URL", "")
+DATABASE_URL = os.environ.get("ATHENA_TEST_DATABASE_URL", "")
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL, reason="KNOWLEDGE_TEST_DATABASE_URL is not set"
+    not DATABASE_URL, reason="ATHENA_TEST_DATABASE_URL is not set"
 )
 
 EXAMPLE_TEXT = (
@@ -46,19 +46,19 @@ TROLLEY_TEXT = (
 
 @pytest_asyncio.fixture
 async def settings() -> Settings:
-    schema = f"knowledge_test_{uuid.uuid4().hex[:12]}"
+    schema = f"athena_test_{uuid.uuid4().hex[:12]}"
     return Settings.from_env(
         {
-            "KNOWLEDGE_DATABASE_URL": DATABASE_URL,
-            "KNOWLEDGE_DB_SCHEMA": schema,
-            "KNOWLEDGE_API_TOKEN": "integration-token-0123456789",
-            "KNOWLEDGE_EMBEDDING_BASE_URL": "https://example.invalid/openai/v1",
-            "KNOWLEDGE_EMBEDDING_API_KEY": "unused",
-            "KNOWLEDGE_EMBEDDING_MODEL": "deterministic",
-            "KNOWLEDGE_EMBEDDING_DIMENSION": str(len(VOCAB)),
-            "KNOWLEDGE_CHUNK_SIZE": "128",
-            "KNOWLEDGE_CHUNK_OVERLAP": "16",
-            "KNOWLEDGE_RETRIEVAL_MODE": "hybrid",
+            "ATHENA_DATABASE_URL": DATABASE_URL,
+            "ATHENA_DB_SCHEMA": schema,
+            "ATHENA_API_TOKEN": "integration-token-0123456789",
+            "ATHENA_EMBEDDING_BASE_URL": "https://example.invalid/openai/v1",
+            "ATHENA_EMBEDDING_API_KEY": "unused",
+            "ATHENA_EMBEDDING_MODEL": "deterministic",
+            "ATHENA_EMBEDDING_DIMENSION": str(len(VOCAB)),
+            "ATHENA_CHUNK_SIZE": "128",
+            "ATHENA_CHUNK_OVERLAP": "16",
+            "ATHENA_RETRIEVAL_MODE": "hybrid",
         }
     )
 

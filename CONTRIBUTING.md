@@ -9,7 +9,7 @@ uv sync --extra dev
 uv run pytest -q
 ```
 
-The PostgreSQL integration tests run when `KNOWLEDGE_TEST_DATABASE_URL` points
+The PostgreSQL integration tests run when `ATHENA_TEST_DATABASE_URL` points
 to a PostgreSQL database with the `vector` extension. Unit tests use in-memory
 fakes and do not require external services.
 

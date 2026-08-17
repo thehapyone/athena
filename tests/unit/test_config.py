@@ -11,32 +11,32 @@ def test_defaults_are_applied(base_env: dict[str, str]) -> None:
         for key, value in base_env.items()
         if key
         in {
-            "KNOWLEDGE_DATABASE_URL",
-            "KNOWLEDGE_API_TOKEN",
-            "KNOWLEDGE_EMBEDDING_BASE_URL",
-            "KNOWLEDGE_EMBEDDING_API_KEY",
-            "KNOWLEDGE_EMBEDDING_MODEL",
-            "KNOWLEDGE_EMBEDDING_DIMENSION",
+            "ATHENA_DATABASE_URL",
+            "ATHENA_API_TOKEN",
+            "ATHENA_EMBEDDING_BASE_URL",
+            "ATHENA_EMBEDDING_API_KEY",
+            "ATHENA_EMBEDDING_MODEL",
+            "ATHENA_EMBEDDING_DIMENSION",
         }
     }
     settings = Settings.from_env(env)
 
-    assert settings.db_schema == "knowledge"
+    assert settings.db_schema == "athena"
     assert settings.chunk_size == 800
     assert settings.chunk_overlap == 120
     assert settings.retrieval_mode == "hybrid"
-    assert settings.vector_table == "knowledge_vectors"
+    assert settings.vector_table == "athena_vectors"
 
 
 @pytest.mark.parametrize(
     "name",
     [
-        "KNOWLEDGE_DATABASE_URL",
-        "KNOWLEDGE_API_TOKEN",
-        "KNOWLEDGE_EMBEDDING_BASE_URL",
-        "KNOWLEDGE_EMBEDDING_API_KEY",
-        "KNOWLEDGE_EMBEDDING_MODEL",
-        "KNOWLEDGE_EMBEDDING_DIMENSION",
+        "ATHENA_DATABASE_URL",
+        "ATHENA_API_TOKEN",
+        "ATHENA_EMBEDDING_BASE_URL",
+        "ATHENA_EMBEDDING_API_KEY",
+        "ATHENA_EMBEDDING_MODEL",
+        "ATHENA_EMBEDDING_DIMENSION",
     ],
 )
 def test_required_variables_are_reported_by_name(base_env: dict[str, str], name: str) -> None:
@@ -48,15 +48,15 @@ def test_required_variables_are_reported_by_name(base_env: dict[str, str], name:
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
-        ({"KNOWLEDGE_DATABASE_URL": "mysql://db/knowledge"}, "KNOWLEDGE_DATABASE_URL"),
-        ({"KNOWLEDGE_DB_SCHEMA": "public; drop table"}, "KNOWLEDGE_DB_SCHEMA"),
-        ({"KNOWLEDGE_API_TOKEN": "short"}, "KNOWLEDGE_API_TOKEN"),
-        ({"KNOWLEDGE_EMBEDDING_BASE_URL": "not-a-url"}, "KNOWLEDGE_EMBEDDING_BASE_URL"),
-        ({"KNOWLEDGE_EMBEDDING_DIMENSION": "0"}, "KNOWLEDGE_EMBEDDING_DIMENSION"),
-        ({"KNOWLEDGE_EMBEDDING_DIMENSION": "abc"}, "KNOWLEDGE_EMBEDDING_DIMENSION"),
-        ({"KNOWLEDGE_CHUNK_OVERLAP": "512", "KNOWLEDGE_CHUNK_SIZE": "256"}, "OVERLAP"),
-        ({"KNOWLEDGE_DEFAULT_TOP_K": "30", "KNOWLEDGE_MAX_TOP_K": "10"}, "DEFAULT_TOP_K"),
-        ({"KNOWLEDGE_RETRIEVAL_MODE": "lexical"}, "KNOWLEDGE_RETRIEVAL_MODE"),
+        ({"ATHENA_DATABASE_URL": "mysql://db/athena"}, "ATHENA_DATABASE_URL"),
+        ({"ATHENA_DB_SCHEMA": "public; drop table"}, "ATHENA_DB_SCHEMA"),
+        ({"ATHENA_API_TOKEN": "short"}, "ATHENA_API_TOKEN"),
+        ({"ATHENA_EMBEDDING_BASE_URL": "not-a-url"}, "ATHENA_EMBEDDING_BASE_URL"),
+        ({"ATHENA_EMBEDDING_DIMENSION": "0"}, "ATHENA_EMBEDDING_DIMENSION"),
+        ({"ATHENA_EMBEDDING_DIMENSION": "abc"}, "ATHENA_EMBEDDING_DIMENSION"),
+        ({"ATHENA_CHUNK_OVERLAP": "512", "ATHENA_CHUNK_SIZE": "256"}, "OVERLAP"),
+        ({"ATHENA_DEFAULT_TOP_K": "30", "ATHENA_MAX_TOP_K": "10"}, "DEFAULT_TOP_K"),
+        ({"ATHENA_RETRIEVAL_MODE": "lexical"}, "ATHENA_RETRIEVAL_MODE"),
     ],
 )
 def test_invalid_values_are_rejected(
@@ -68,27 +68,27 @@ def test_invalid_values_are_rejected(
 
 
 def test_secrets_are_never_echoed(base_env: dict[str, str]) -> None:
-    base_env["KNOWLEDGE_API_TOKEN"] = "tiny"
+    base_env["ATHENA_API_TOKEN"] = "tiny"
     with pytest.raises(ConfigurationError) as error:
         Settings.from_env(base_env)
     assert "tiny" not in str(error.value)
 
-    settings = Settings.from_env(dict(base_env, KNOWLEDGE_API_TOKEN="a-valid-token-value-1234"))
+    settings = Settings.from_env(dict(base_env, ATHENA_API_TOKEN="a-valid-token-value-1234"))
     redacted = settings.redacted()
     assert "a-valid-token-value-1234" not in str(redacted)
     assert "embedding-key" not in str(redacted)
 
 
 def test_database_urls_are_translated_for_sqlalchemy(base_env: dict[str, str]) -> None:
-    base_env["KNOWLEDGE_DATABASE_URL"] = "postgres://user:pass@db:5432/knowledge"
+    base_env["ATHENA_DATABASE_URL"] = "postgres://user:pass@db:5432/athena"
     settings = Settings.from_env(base_env)
 
-    assert settings.async_database_url == "postgresql+asyncpg://user:pass@db:5432/knowledge"
-    assert settings.sync_database_url == "postgresql://user:pass@db:5432/knowledge"
+    assert settings.async_database_url == "postgresql+asyncpg://user:pass@db:5432/athena"
+    assert settings.sync_database_url == "postgresql://user:pass@db:5432/athena"
 
 
 def test_trailing_slash_is_stripped_from_embedding_url(base_env: dict[str, str]) -> None:
-    base_env["KNOWLEDGE_EMBEDDING_BASE_URL"] = "https://resource.example.com/openai/v1/"
+    base_env["ATHENA_EMBEDDING_BASE_URL"] = "https://resource.example.com/openai/v1/"
     assert (
         Settings.from_env(base_env).embedding_base_url == "https://resource.example.com/openai/v1"
     )
@@ -121,15 +121,15 @@ def test_a_docling_url_must_be_absolute_http(base_env: dict[str, str], value: st
 
 
 def test_upload_limits_are_bounded(base_env: dict[str, str]) -> None:
-    with pytest.raises(ConfigurationError, match="KNOWLEDGE_MAX_UPLOAD_BYTES"):
-        Settings.from_env({**base_env, "KNOWLEDGE_MAX_UPLOAD_BYTES": "1"})
-    with pytest.raises(ConfigurationError, match="KNOWLEDGE_MAX_UPLOAD_BYTES"):
-        Settings.from_env({**base_env, "KNOWLEDGE_MAX_UPLOAD_BYTES": "not-a-number"})
-    with pytest.raises(ConfigurationError, match="KNOWLEDGE_MAX_UPLOAD_BYTES"):
+    with pytest.raises(ConfigurationError, match="ATHENA_MAX_UPLOAD_BYTES"):
+        Settings.from_env({**base_env, "ATHENA_MAX_UPLOAD_BYTES": "1"})
+    with pytest.raises(ConfigurationError, match="ATHENA_MAX_UPLOAD_BYTES"):
+        Settings.from_env({**base_env, "ATHENA_MAX_UPLOAD_BYTES": "not-a-number"})
+    with pytest.raises(ConfigurationError, match="ATHENA_MAX_UPLOAD_BYTES"):
         Settings.from_env(
             {
                 **base_env,
-                "KNOWLEDGE_MAX_UPLOAD_BYTES": str(50 * 1024 * 1024 + 1),
+                "ATHENA_MAX_UPLOAD_BYTES": str(50 * 1024 * 1024 + 1),
             }
         )
 

@@ -1,1 +1,1 @@
-"""Standalone knowledge ingestion and retrieval service."""
+"""Athena document ingestion and retrieval engine."""

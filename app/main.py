@@ -1,4 +1,4 @@
-"""FastAPI application for the standalone knowledge service."""
+"""FastAPI application for Athena."""
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -208,7 +208,7 @@ async def verify_embedding_state(repository: Repository, settings: Settings) -> 
         raise EmbeddingModelMismatchError(
             "The indexed embedding model "
             f"({stored.model_name}/{stored.model_dim}) does not match the configured model "
-            f"({desired.model_name}/{desired.model_dim}). Point KNOWLEDGE_DB_SCHEMA at a fresh "
+            f"({desired.model_name}/{desired.model_dim}). Point ATHENA_DB_SCHEMA at a fresh "
             "schema or drop the existing schema and re-ingest."
         )
 
@@ -220,7 +220,7 @@ def create_app(settings: Settings, runtime_factory: RuntimeFactory | None = None
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        logger.info("Starting knowledge service with %s", settings.redacted())
+        logger.info("Starting Athena with %s", settings.redacted())
         runtime = await factory(settings)
         try:
             await prepare_repository(runtime.repository, settings)
@@ -340,7 +340,7 @@ async def _read_upload(file: UploadFile, limit: int) -> bytes:
     The declared request size is refused earlier by the size middleware; this
     also stops a body that understated its ``Content-Length`` from being loaded
     in full. Starlette spools the part to a temporary file first, so the
-    container's ``/tmp`` must be larger than ``KNOWLEDGE_MAX_UPLOAD_BYTES``.
+    container's ``/tmp`` must be larger than ``ATHENA_MAX_UPLOAD_BYTES``.
     """
     chunks: list[bytes] = []
     received = 0

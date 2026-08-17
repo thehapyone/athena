@@ -40,7 +40,7 @@ async def test_job_status_survives_a_restart(
     app = create_app(settings, runtime_factory=runtime_factory)
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://knowledge") as http_client:
+        async with AsyncClient(transport=transport, base_url="http://athena") as http_client:
             http_client.app = app  # type: ignore[attr-defined]
             job = await ingest(http_client, DOCUMENT)
 
@@ -48,7 +48,7 @@ async def test_job_status_survives_a_restart(
     restarted = create_app(settings, runtime_factory=runtime_factory)
     async with restarted.router.lifespan_context(restarted):
         transport = ASGITransport(app=restarted)
-        async with AsyncClient(transport=transport, base_url="http://knowledge") as http_client:
+        async with AsyncClient(transport=transport, base_url="http://athena") as http_client:
             response = await http_client.get(f"/v1/jobs/{job['job_id']}", headers=auth_headers())
 
     assert response.status_code == 200
@@ -70,7 +70,7 @@ async def test_interrupted_jobs_are_reconciled_on_startup(
     app = create_app(settings, runtime_factory=runtime_factory)
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://knowledge") as http_client:
+        async with AsyncClient(transport=transport, base_url="http://athena") as http_client:
             response = await http_client.get(
                 f"/v1/jobs/{interrupted.job_id}", headers=auth_headers()
             )

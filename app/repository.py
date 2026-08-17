@@ -86,7 +86,7 @@ class SourceObjectRecord:
 
 @dataclass(frozen=True, slots=True)
 class SourceRecord:
-    """One selectable knowledge source, as a UI needs to render it."""
+    """One selectable document source, as a UI needs to render it."""
 
     external_id: str
     title: str

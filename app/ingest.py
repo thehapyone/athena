@@ -39,7 +39,7 @@ class MetadataConflictError(ValueError):
 def document_uuid(collection_id: str, external_id: str) -> UUID:
     """Stable document identity for a collection-scoped external ID."""
     # Keep the namespace stable so moving the service does not orphan indexed documents.
-    return uuid5(NAMESPACE_URL, f"athena-knowledge:{collection_id}:{external_id}")
+    return uuid5(NAMESPACE_URL, f"athena:{collection_id}:{external_id}")
 
 
 def text_checksum(text: str) -> str:

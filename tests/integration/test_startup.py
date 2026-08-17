@@ -2,7 +2,7 @@
 
 Proves the service starts with only documented environment variables plus
 PostgreSQL: no Athena repository content, configuration file, or embedding call
-is involved. Skipped unless ``KNOWLEDGE_TEST_DATABASE_URL`` is set.
+is involved. Skipped unless ``ATHENA_TEST_DATABASE_URL`` is set.
 """
 
 import os
@@ -16,10 +16,10 @@ from httpx import ASGITransport, AsyncClient
 from app.config import Settings
 from app.main import create_app
 
-DATABASE_URL = os.environ.get("KNOWLEDGE_TEST_DATABASE_URL", "")
+DATABASE_URL = os.environ.get("ATHENA_TEST_DATABASE_URL", "")
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL, reason="KNOWLEDGE_TEST_DATABASE_URL is not set"
+    not DATABASE_URL, reason="ATHENA_TEST_DATABASE_URL is not set"
 )
 
 API_TOKEN = "integration-token-0123456789"
@@ -27,18 +27,18 @@ API_TOKEN = "integration-token-0123456789"
 
 @pytest_asyncio.fixture
 async def documented_env(tmp_path):
-    schema = f"knowledge_start_{uuid.uuid4().hex[:12]}"
+    schema = f"athena_start_{uuid.uuid4().hex[:12]}"
     env = {
-        "KNOWLEDGE_DATABASE_URL": DATABASE_URL,
-        "KNOWLEDGE_DB_SCHEMA": schema,
-        "KNOWLEDGE_API_TOKEN": API_TOKEN,
-        "KNOWLEDGE_EMBEDDING_BASE_URL": "https://example.invalid/openai/v1",
-        "KNOWLEDGE_EMBEDDING_API_KEY": "unused-during-startup",
-        "KNOWLEDGE_EMBEDDING_MODEL": "text-embedding-3-large",
-        "KNOWLEDGE_EMBEDDING_DIMENSION": "1536",
+        "ATHENA_DATABASE_URL": DATABASE_URL,
+        "ATHENA_DB_SCHEMA": schema,
+        "ATHENA_API_TOKEN": API_TOKEN,
+        "ATHENA_EMBEDDING_BASE_URL": "https://example.invalid/openai/v1",
+        "ATHENA_EMBEDDING_API_KEY": "unused-during-startup",
+        "ATHENA_EMBEDDING_MODEL": "text-embedding-3-large",
+        "ATHENA_EMBEDDING_DIMENSION": "1536",
         # The deployment default lives inside the container; a test run needs a
         # directory it can actually write to.
-        "KNOWLEDGE_SOURCE_STORAGE_DIR": str(tmp_path / "sources"),
+        "ATHENA_SOURCE_STORAGE_DIR": str(tmp_path / "sources"),
     }
     try:
         yield env
@@ -54,7 +54,7 @@ async def test_service_starts_and_serves_health_and_auth(documented_env: dict[st
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://knowledge") as client:
+        async with AsyncClient(transport=transport, base_url="http://athena") as client:
             live = await client.get("/health/live")
             ready = await client.get("/health/ready")
             unauthorized = await client.post(
