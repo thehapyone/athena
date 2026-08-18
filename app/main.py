@@ -170,13 +170,23 @@ def _build_converter(
         )
         return http_client, converter
 
-    http_client = httpx.AsyncClient(timeout=float(settings.docling_timeout_seconds))
+    # DoclingClient sets an explicit timeout on every request, bounded by both
+    # DOCLING_TIMEOUT_SECONDS and whatever is left of the conversion deadline, so
+    # the client itself needs no timeout of its own.
+    http_client = httpx.AsyncClient()
     converter = DoclingClient(
         settings.docling_base_url,
         http_client,
         max_response_bytes=settings.max_document_bytes + REQUEST_OVERHEAD_BYTES,
+        request_timeout_seconds=settings.docling_timeout_seconds,
+        deadline_seconds=settings.docling_conversion_deadline_seconds,
+        poll_interval_seconds=settings.docling_poll_interval_seconds,
     )
-    logger.info("Document conversion enabled via %s", settings.docling_base_url)
+    logger.info(
+        "Document conversion enabled via %s, deadline %ds",
+        settings.docling_base_url,
+        settings.docling_conversion_deadline_seconds,
+    )
     return http_client, converter
 
 
@@ -230,12 +240,20 @@ async def build_runtime(settings: Settings) -> Runtime:
     )
 
 
-async def prepare_repository(repository: Repository, settings: Settings) -> None:
-    """Reconcile durable state before the service accepts traffic."""
-    await verify_embedding_state(repository, settings)
-    interrupted = await repository.fail_interrupted_jobs(INTERRUPTED_JOB_DETAIL)
+async def prepare_runtime(runtime: Runtime, settings: Settings) -> None:
+    """Reconcile durable state before the service accepts traffic.
+
+    Jobs waiting on a converter task are resumed rather than failed: the remote
+    conversion kept running while Athena was down, and the whole point of
+    recording its task id was to be able to pick it up again.
+    """
+    await verify_embedding_state(runtime.repository, settings)
+    interrupted = await runtime.repository.fail_interrupted_jobs(INTERRUPTED_JOB_DETAIL)
     if interrupted:
         logger.warning("Marked %d interrupted ingestion job(s) as failed", interrupted)
+    resumed = await runtime.ingestion.resume_conversions()
+    if resumed:
+        logger.info("Resumed %d in-flight document conversion(s)", resumed)
 
 
 async def verify_embedding_state(repository: Repository, settings: Settings) -> None:
@@ -271,7 +289,7 @@ def create_app(settings: Settings, runtime_factory: RuntimeFactory | None = None
         logger.info("Starting Athena with %s", settings.redacted())
         runtime = await factory(settings)
         try:
-            await prepare_repository(runtime.repository, settings)
+            await prepare_runtime(runtime, settings)
         except BaseException:
             # A failed startup must not leak the pool or vector-store connections.
             if runtime.close is not None:

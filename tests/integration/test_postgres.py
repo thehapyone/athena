@@ -376,6 +376,12 @@ async def test_existing_ingest_jobs_schema_upgrades_without_breaking_old_writers
     assert legacy.filename is None
     assert legacy.media_type is None
     assert legacy.detail == "legacy detail"
+    # A job recorded before asynchronous conversion existed simply holds no
+    # converter task, which is exactly how a non-resumable job reads.
+    assert legacy.converter_name is None
+    assert legacy.converter_task_id is None
+    assert legacy.converter_submitted_at is None
+    assert legacy.resumable is False
 
     # An old application instance can still insert its original column set
     # while a new instance is live because every added column has a default.
@@ -405,6 +411,61 @@ async def test_existing_ingest_jobs_schema_upgrades_without_breaking_old_writers
     assert stored_current is not None
     assert stored_current.title == "Current upload"
     assert stored_current.filename == "current.md"
+
+
+async def test_a_converter_task_round_trips_and_survives_a_restart(stack) -> None:
+    """A recorded converter task is what makes a conversion resumable in Postgres."""
+    repository, _vector_store, _embed_model, _ingestion, _source_store = stack
+    pending = JobRecord(
+        job_id=uuid.uuid4(),
+        collection_id="example-collection",
+        external_id="file-pending",
+        status="processing",
+        title="service.pdf",
+        source_type="pdf",
+        filename="service.pdf",
+        media_type="application/pdf",
+    )
+    interrupted = JobRecord(
+        job_id=uuid.uuid4(),
+        collection_id="example-collection",
+        external_id="file-interrupted",
+        status="processing",
+    )
+    await repository.create_job(pending)
+    await repository.create_job(interrupted)
+
+    submitted_at = datetime.now(UTC) - timedelta(minutes=3)
+    await repository.set_job_conversion_task(
+        pending.job_id,
+        converter_name="docling",
+        task_id="task-abc",
+        submitted_at=submitted_at,
+    )
+
+    stored = await repository.get_job(pending.job_id)
+    assert stored is not None
+    assert stored.converter_name == "docling"
+    assert stored.converter_task_id == "task-abc"
+    assert stored.converter_submitted_at == submitted_at
+    assert stored.resumable is True
+
+    # Startup reconciliation: only the job with no converter task is failed.
+    failed = await repository.fail_interrupted_jobs("Interrupted by a restart.")
+    assert failed == 1
+    resumable = await repository.list_resumable_jobs()
+    assert [job.job_id for job in resumable] == [pending.job_id]
+    assert resumable[0].filename == "service.pdf"
+    reloaded = await repository.get_job(interrupted.job_id)
+    assert reloaded is not None and reloaded.status == "failed"
+
+    # The listing path carries the task through too, so a source stays visible
+    # as processing while its conversion runs.
+    listed = {
+        record.external_id: record
+        for record in await repository.list_sources("example-collection", limit=50)
+    }
+    assert listed["file-pending"].status == "processing"
 
 
 async def _upload(ingestion: IngestionService, filename: str, content: bytes, media_type: str):

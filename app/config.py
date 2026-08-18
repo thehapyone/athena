@@ -54,6 +54,8 @@ class Settings:
     document_converter: DocumentConverterBackend
     docling_base_url: str
     docling_timeout_seconds: int
+    docling_conversion_deadline_seconds: int
+    docling_poll_interval_seconds: int
     azure_ocr_endpoint: str
     azure_ocr_api_key: str
     azure_ocr_model_id: str
@@ -100,6 +102,8 @@ class Settings:
             "document_converter": self.document_converter,
             "docling_base_url": self.docling_base_url or "(unset)",
             "docling_timeout_seconds": self.docling_timeout_seconds,
+            "docling_conversion_deadline_seconds": self.docling_conversion_deadline_seconds,
+            "docling_poll_interval_seconds": self.docling_poll_interval_seconds,
             "azure_ocr_endpoint": self.azure_ocr_endpoint or "(unset)",
             "azure_ocr_model_id": self.azure_ocr_model_id,
             "azure_ocr_timeout_seconds": self.azure_ocr_timeout_seconds,
@@ -182,6 +186,28 @@ class Settings:
                     "instance (for example http://docling:5001)."
                 )
 
+        # Docling conversion is submitted as an asynchronous task and polled, so
+        # the bound that matters is the overall deadline rather than any single
+        # request's timeout. An hour leaves room for a large scanned PDF on CPU;
+        # each HTTP request stays bounded by DOCLING_TIMEOUT_SECONDS.
+        docling_timeout_seconds = _integer(source, "DOCLING_TIMEOUT_SECONDS", 120, 5, 900)
+        docling_conversion_deadline_seconds = _integer(
+            source, "DOCLING_CONVERSION_DEADLINE_SECONDS", 3_600, 60, 86_400
+        )
+        if docling_conversion_deadline_seconds < docling_timeout_seconds:
+            raise ConfigurationError(
+                "DOCLING_CONVERSION_DEADLINE_SECONDS must not be smaller than "
+                "DOCLING_TIMEOUT_SECONDS."
+            )
+        docling_poll_interval_seconds = _integer(
+            source, "DOCLING_POLL_INTERVAL_SECONDS", 5, 1, 300
+        )
+        if docling_poll_interval_seconds > docling_conversion_deadline_seconds:
+            raise ConfigurationError(
+                "DOCLING_POLL_INTERVAL_SECONDS must not exceed "
+                "DOCLING_CONVERSION_DEADLINE_SECONDS."
+            )
+
         # Azure Document Intelligence is the cloud alternative to Docling. Its
         # fields are validated whenever set, regardless of which backend is
         # selected, but are only required when DOCUMENT_CONVERTER=azure: unlike
@@ -232,7 +258,9 @@ class Settings:
             source_storage_dir=source_storage_dir,
             document_converter=document_converter,  # type: ignore[arg-type]
             docling_base_url=docling_base_url,
-            docling_timeout_seconds=_integer(source, "DOCLING_TIMEOUT_SECONDS", 660, 5, 900),
+            docling_timeout_seconds=docling_timeout_seconds,
+            docling_conversion_deadline_seconds=docling_conversion_deadline_seconds,
+            docling_poll_interval_seconds=docling_poll_interval_seconds,
             azure_ocr_endpoint=azure_ocr_endpoint,
             azure_ocr_api_key=azure_ocr_api_key,
             azure_ocr_model_id=_text(source, "AZURE_OCR_MODEL_ID", "prebuilt-layout"),

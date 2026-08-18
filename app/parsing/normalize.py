@@ -2,12 +2,17 @@
 
 Text and Markdown are decoded in-process so the feature works on a small VM with
 no converter running. Everything else goes through a ``DocumentConverter``, which
-today is Docling and could later be an Azure or Mistral OCR adapter without the
-ingest path changing.
+today is Docling or Azure Document Intelligence.
+
+A converter that also satisfies ``ResumableDocumentConverter`` splits conversion
+into a submission and a wait on a durable task id. The ingest path uses that
+split so a conversion outlives an Athena restart; converters without it are still
+driven through :meth:`DocumentNormalizer.to_document` in one call.
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from datetime import datetime
+from typing import Protocol, runtime_checkable
 
 from app.parsing.errors import (
     ConversionUnavailableError,
@@ -38,6 +43,23 @@ class DocumentConverter(Protocol):
     ) -> ConvertedDocument: ...
 
 
+@runtime_checkable
+class ResumableDocumentConverter(DocumentConverter, Protocol):
+    """A converter whose in-flight work is addressable by a durable task id."""
+
+    async def submit(
+        self,
+        *,
+        filename: str,
+        media_type: str,
+        content: bytes,
+    ) -> str: ...
+
+    async def await_result(
+        self, task_id: str, *, submitted_at: datetime
+    ) -> ConvertedDocument: ...
+
+
 @dataclass(frozen=True, slots=True)
 class UploadedFile:
     """One accepted upload, already validated against a supported format."""
@@ -64,14 +86,30 @@ class DocumentNormalizer:
     def conversion_available(self) -> bool:
         return self._converter is not None
 
+    @property
+    def converter_name(self) -> str | None:
+        return self._converter.name if self._converter is not None else None
+
+    @property
+    def resumable_converter(self) -> ResumableDocumentConverter | None:
+        """The converter, when its work can be resumed by task id."""
+        if isinstance(self._converter, ResumableDocumentConverter):
+            return self._converter
+        return None
+
+    def require_converter(self, upload_format: UploadFormat) -> DocumentConverter:
+        if self._converter is None:
+            raise ConversionUnavailableError(
+                f"{upload_format.label} uploads need a document converter, which is not "
+                "configured on this deployment. Plain text and Markdown uploads still work."
+            )
+        return self._converter
+
     async def to_document(self, upload: UploadedFile) -> ConvertedDocument:
+        """Convert *upload* in one call, waiting for the converter throughout."""
         if upload.format.needs_conversion:
-            if self._converter is None:
-                raise ConversionUnavailableError(
-                    f"{upload.format.label} uploads need a document converter, which is not "
-                    "configured on this deployment. Plain text and Markdown uploads still work."
-                )
-            converted = await self._converter.convert(
+            converter = self.require_converter(upload.format)
+            converted = await converter.convert(
                 filename=upload.filename,
                 media_type=upload.media_type,
                 content=upload.content,
@@ -82,7 +120,35 @@ class DocumentNormalizer:
             converted = build_converted_document(
                 [DocumentSegment(text=clean_text(_decode_text(upload.content)))]
             )
+        return self.bounded(converted)
 
+    async def submit_conversion(self, upload: UploadedFile) -> str:
+        """Hand *upload* to a resumable converter and return its task id."""
+        converter = self.resumable_converter
+        if converter is None:  # pragma: no cover - callers check first
+            raise ConversionUnavailableError(
+                "This deployment's document converter cannot run conversions asynchronously."
+            )
+        return await converter.submit(
+            filename=upload.filename,
+            media_type=upload.media_type,
+            content=upload.content,
+        )
+
+    async def await_conversion(
+        self, task_id: str, *, submitted_at: datetime
+    ) -> ConvertedDocument:
+        """Follow an already-submitted conversion to its end."""
+        converter = self.resumable_converter
+        if converter is None:
+            raise ConversionUnavailableError(
+                "This deployment's document converter can no longer finish the conversion "
+                "this document was submitted for. Upload the file again."
+            )
+        return self.bounded(await converter.await_result(task_id, submitted_at=submitted_at))
+
+    def bounded(self, converted: ConvertedDocument) -> ConvertedDocument:
+        """Reject converted text that is empty or larger than this service indexes."""
         if not converted.text:
             raise DocumentDecodeError("The document contains no readable text to index.")
         if len(converted.text.encode("utf-8")) > self._max_text_bytes:

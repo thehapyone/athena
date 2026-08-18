@@ -50,8 +50,24 @@ class JobRecord:
     chunk_count: int = 0
     unchanged: bool = False
     detail: str | None = None
+    # Identity of the converter task this upload was handed to, recorded before
+    # any polling starts. It is what makes a conversion resumable: after a
+    # restart the job is continued against the same remote task instead of the
+    # file being converted, and paid for, a second time.
+    converter_name: str | None = None
+    converter_task_id: str | None = None
+    converter_submitted_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    @property
+    def resumable(self) -> bool:
+        """Whether this job is waiting on remote work that outlived Athena."""
+        return bool(
+            self.status in ("accepted", "processing")
+            and self.converter_task_id
+            and self.converter_submitted_at is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,10 +244,23 @@ class Repository(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def set_job_conversion_task(
+        self,
+        job_id: UUID,
+        *,
+        converter_name: str,
+        task_id: str,
+        submitted_at: datetime,
+    ) -> None: ...
+
+    @abstractmethod
     async def get_job(self, job_id: UUID) -> JobRecord | None: ...
 
     @abstractmethod
     async def get_latest_job(self, collection_id: str, external_id: str) -> JobRecord | None: ...
+
+    @abstractmethod
+    async def list_resumable_jobs(self) -> list[JobRecord]: ...
 
     @abstractmethod
     async def fail_interrupted_jobs(self, detail: str) -> int: ...
@@ -298,6 +327,9 @@ def schema_ddl(schema: str) -> tuple[str, ...]:
             chunk_count integer NOT NULL DEFAULT 0,
             unchanged boolean NOT NULL DEFAULT false,
             detail text,
+            converter_name text,
+            converter_task_id text,
+            converter_submitted_at timestamptz,
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now()
         )
@@ -306,8 +338,19 @@ def schema_ddl(schema: str) -> tuple[str, ...]:
         f"ALTER TABLE {schema}.ingest_jobs ADD COLUMN IF NOT EXISTS source_type text NOT NULL DEFAULT 'text'",
         f"ALTER TABLE {schema}.ingest_jobs ADD COLUMN IF NOT EXISTS filename text",
         f"ALTER TABLE {schema}.ingest_jobs ADD COLUMN IF NOT EXISTS media_type text",
+        # Nullable and unconstrained, so an existing deployment upgrades in place:
+        # every job written before asynchronous conversion simply has no converter
+        # task, which is exactly how a non-resumable job reads.
+        f"ALTER TABLE {schema}.ingest_jobs ADD COLUMN IF NOT EXISTS converter_name text",
+        f"ALTER TABLE {schema}.ingest_jobs ADD COLUMN IF NOT EXISTS converter_task_id text",
+        f"ALTER TABLE {schema}.ingest_jobs "
+        f"ADD COLUMN IF NOT EXISTS converter_submitted_at timestamptz",
         f"CREATE INDEX IF NOT EXISTS ingest_jobs_status_idx "
         f"ON {schema}.ingest_jobs (status)",
+        # Startup reads exactly this set to decide what to resume, so it is worth
+        # a partial index rather than a scan of every job ever recorded.
+        f"CREATE INDEX IF NOT EXISTS ingest_jobs_resumable_idx "
+        f"ON {schema}.ingest_jobs (status) WHERE converter_task_id IS NOT NULL",
         f"CREATE INDEX IF NOT EXISTS ingest_jobs_identity_idx "
         f"ON {schema}.ingest_jobs (collection_id, external_id, created_at DESC)",
         # Written before conversion starts, so there is no foreign key to
@@ -443,13 +486,15 @@ class PostgresRepository(Repository):
         jobs = await self._pool.fetch(
             f"""
             SELECT job_id, collection_id, external_id, title, source_type, filename,
-                   media_type, document_id, status,
-                   chunk_count, unchanged, detail, created_at, updated_at
+                   media_type, document_id, status, chunk_count, unchanged, detail,
+                   converter_name, converter_task_id, converter_submitted_at,
+                   created_at, updated_at
             FROM (
                 SELECT DISTINCT ON (external_id)
                        job_id, collection_id, external_id, title, source_type, filename,
-                       media_type, document_id, status,
-                       chunk_count, unchanged, detail, created_at, updated_at
+                       media_type, document_id, status, chunk_count, unchanged, detail,
+                       converter_name, converter_task_id, converter_submitted_at,
+                       created_at, updated_at
                 FROM {self._schema}.ingest_jobs
                 WHERE collection_id = $1
                 ORDER BY external_id, created_at DESC, job_id DESC
@@ -560,9 +605,10 @@ class PostgresRepository(Repository):
             f"""
             INSERT INTO {self._schema}.ingest_jobs (
                 job_id, collection_id, external_id, title, source_type, filename,
-                media_type, document_id, status, chunk_count, unchanged, detail
+                media_type, document_id, status, chunk_count, unchanged, detail,
+                converter_name, converter_task_id, converter_submitted_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             """,
             record.job_id,
             record.collection_id,
@@ -576,6 +622,9 @@ class PostgresRepository(Repository):
             record.chunk_count,
             record.unchanged,
             record.detail,
+            record.converter_name,
+            record.converter_task_id,
+            record.converter_submitted_at,
         )
 
     async def update_job(
@@ -607,12 +656,41 @@ class PostgresRepository(Repository):
             detail,
         )
 
+    async def set_job_conversion_task(
+        self,
+        job_id: UUID,
+        *,
+        converter_name: str,
+        task_id: str,
+        submitted_at: datetime,
+    ) -> None:
+        """Record the converter task this job is waiting on.
+
+        Written before the first poll, so a crash between submission and the
+        first status read still leaves the remote task findable.
+        """
+        await self._pool.execute(
+            f"""
+            UPDATE {self._schema}.ingest_jobs
+            SET converter_name = $2,
+                converter_task_id = $3,
+                converter_submitted_at = $4,
+                updated_at = now()
+            WHERE job_id = $1
+            """,
+            job_id,
+            converter_name,
+            task_id,
+            submitted_at,
+        )
+
     async def get_job(self, job_id: UUID) -> JobRecord | None:
         row = await self._pool.fetchrow(
             f"""
             SELECT job_id, collection_id, external_id, document_id, status,
                    title, source_type, filename, media_type, chunk_count, unchanged,
-                   detail, created_at, updated_at
+                   detail, converter_name, converter_task_id, converter_submitted_at,
+                   created_at, updated_at
             FROM {self._schema}.ingest_jobs
             WHERE job_id = $1
             """,
@@ -625,7 +703,8 @@ class PostgresRepository(Repository):
             f"""
             SELECT job_id, collection_id, external_id, document_id, status,
                    title, source_type, filename, media_type, chunk_count, unchanged,
-                   detail, created_at, updated_at
+                   detail, converter_name, converter_task_id, converter_submitted_at,
+                   created_at, updated_at
             FROM {self._schema}.ingest_jobs
             WHERE collection_id = $1 AND external_id = $2
             ORDER BY created_at DESC, job_id DESC
@@ -636,12 +715,35 @@ class PostgresRepository(Repository):
         )
         return _job_from_row(row) if row else None
 
+    async def list_resumable_jobs(self) -> list[JobRecord]:
+        rows = await self._pool.fetch(
+            f"""
+            SELECT job_id, collection_id, external_id, document_id, status,
+                   title, source_type, filename, media_type, chunk_count, unchanged,
+                   detail, converter_name, converter_task_id, converter_submitted_at,
+                   created_at, updated_at
+            FROM {self._schema}.ingest_jobs
+            WHERE status IN ('accepted', 'processing')
+              AND converter_task_id IS NOT NULL
+              AND converter_submitted_at IS NOT NULL
+            ORDER BY converter_submitted_at
+            """
+        )
+        return [_job_from_row(row) for row in rows]
+
     async def fail_interrupted_jobs(self, detail: str) -> int:
+        """Fail unfinished jobs that hold no resumable converter task.
+
+        A job whose converter task is recorded is deliberately left alone: the
+        remote conversion is still running, and failing it here would throw away
+        work Athena has already paid for.
+        """
         rows = await self._pool.fetch(
             f"""
             UPDATE {self._schema}.ingest_jobs
             SET status = 'failed', detail = $1, updated_at = now()
             WHERE status IN ('accepted', 'processing')
+              AND (converter_task_id IS NULL OR converter_submitted_at IS NULL)
             RETURNING job_id
             """,
             detail,
@@ -785,6 +887,9 @@ def _job_from_row(row: Any) -> JobRecord:
         chunk_count=row["chunk_count"],
         unchanged=row["unchanged"],
         detail=row["detail"],
+        converter_name=row["converter_name"],
+        converter_task_id=row["converter_task_id"],
+        converter_submitted_at=row["converter_submitted_at"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

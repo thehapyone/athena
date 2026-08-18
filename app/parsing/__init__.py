@@ -3,7 +3,11 @@
 from app.parsing.azure_di import AzureDocumentIntelligenceClient
 from app.parsing.docling import DoclingClient
 from app.parsing.errors import (
+    ConversionDeadlineExceededError,
     ConversionFailedError,
+    ConversionResultUnavailableError,
+    ConversionSubmissionError,
+    ConversionTaskLostError,
     ConversionUnavailableError,
     DocumentDecodeError,
     DocumentError,
@@ -18,7 +22,12 @@ from app.parsing.formats import (
     sanitize_filename,
     supported_extensions_text,
 )
-from app.parsing.normalize import DocumentConverter, DocumentNormalizer, UploadedFile
+from app.parsing.normalize import (
+    DocumentConverter,
+    DocumentNormalizer,
+    ResumableDocumentConverter,
+    UploadedFile,
+)
 from app.parsing.segments import (
     ConvertedDocument,
     DocumentSegment,
@@ -30,7 +39,11 @@ __all__ = [
     "SUPPORTED_EXTENSIONS",
     "SUPPORTED_FORMATS",
     "AzureDocumentIntelligenceClient",
+    "ConversionDeadlineExceededError",
     "ConversionFailedError",
+    "ConversionResultUnavailableError",
+    "ConversionSubmissionError",
+    "ConversionTaskLostError",
     "ConversionUnavailableError",
     "ConvertedDocument",
     "DoclingClient",
@@ -40,6 +53,7 @@ __all__ = [
     "DocumentNormalizer",
     "DocumentSegment",
     "DocumentTooLargeError",
+    "ResumableDocumentConverter",
     "UnsupportedDocumentError",
     "UploadFormat",
     "UploadedFile",

@@ -5,6 +5,7 @@ isolation tests exercise the service's own guard rather than a cooperative
 backend.
 """
 
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -161,8 +162,8 @@ class RecordingVectorStore(BasePydanticVectorStore):
 class RecordingConverter:
     """Document converter double: records calls and can be made to fail.
 
-    ``segments`` is what a provenance-carrying converter returns; setting it to
-    ``None`` models the Markdown-only fallback, which reports no page or section.
+    ``segments`` is what a provenance-carrying converter returns; leaving it
+    ``None`` yields one unlocated segment, which reports no page or section.
     """
 
     name = "recording"
@@ -182,6 +183,56 @@ class RecordingConverter:
         if self.segments is not None:
             return build_converted_document(list(self.segments))
         return build_converted_document([DocumentSegment(text=self.markdown)])
+
+
+class RecordingAsyncConverter(RecordingConverter):
+    """A converter whose work is addressable by task id, like Docling's async API.
+
+    Submissions and result waits are counted separately, which is what the
+    restart-resume and duplicate-upload tests assert on: the point of those tests
+    is that a file is submitted exactly once.
+    """
+
+    name = "docling"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submissions: list[dict[str, Any]] = []
+        self.awaited: list[str] = []
+        self.submit_error: Exception | None = None
+        self.result_error: Exception | None = None
+        # When set, a result wait blocks until the test releases it, which models a
+        # conversion that is still running.
+        self.released: asyncio.Event | None = None
+
+    @property
+    def submission_count(self) -> int:
+        return len(self.submissions)
+
+    async def submit(self, *, filename: str, media_type: str, content: bytes) -> str:
+        self.submissions.append(
+            {"filename": filename, "media_type": media_type, "content": content}
+        )
+        if self.submit_error is not None:
+            raise self.submit_error
+        return f"task-{len(self.submissions)}"
+
+    async def await_result(self, task_id: str, *, submitted_at: datetime) -> ConvertedDocument:
+        self.awaited.append(task_id)
+        if self.released is not None:
+            await self.released.wait()
+        if self.result_error is not None:
+            raise self.result_error
+        if self.segments is not None:
+            return build_converted_document(list(self.segments))
+        return build_converted_document([DocumentSegment(text=self.markdown)])
+
+    async def convert(
+        self, *, filename: str, media_type: str, content: bytes
+    ) -> ConvertedDocument:
+        self.calls.append({"filename": filename, "media_type": media_type, "content": content})
+        task_id = await self.submit(filename=filename, media_type=media_type, content=content)
+        return await self.await_result(task_id, submitted_at=datetime.now(UTC))
 
 
 class InMemorySourceStore(SourceObjectStore):
@@ -333,6 +384,23 @@ class InMemoryRepository(Repository):
             updated_at=datetime.now(UTC),
         )
 
+    async def set_job_conversion_task(
+        self,
+        job_id: UUID,
+        *,
+        converter_name: str,
+        task_id: str,
+        submitted_at: datetime,
+    ) -> None:
+        job = self.jobs[job_id]
+        self.jobs[job_id] = replace(
+            job,
+            converter_name=converter_name,
+            converter_task_id=task_id,
+            converter_submitted_at=submitted_at,
+            updated_at=datetime.now(UTC),
+        )
+
     async def get_job(self, job_id: UUID) -> JobRecord | None:
         return self.jobs.get(job_id)
 
@@ -346,10 +414,16 @@ class InMemoryRepository(Repository):
             return None
         return max(matching, key=lambda job: job.created_at or datetime.fromtimestamp(0, tz=UTC))
 
+    async def list_resumable_jobs(self) -> list[JobRecord]:
+        return sorted(
+            (job for job in self.jobs.values() if job.resumable),
+            key=lambda job: job.converter_submitted_at or datetime.fromtimestamp(0, tz=UTC),
+        )
+
     async def fail_interrupted_jobs(self, detail: str) -> int:
         failed = 0
         for job_id, job in list(self.jobs.items()):
-            if job.status in ("accepted", "processing"):
+            if job.status in ("accepted", "processing") and not job.resumable:
                 self.jobs[job_id] = replace(
                     job, status="failed", detail=detail, updated_at=datetime.now(UTC)
                 )

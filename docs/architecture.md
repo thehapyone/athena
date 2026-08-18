@@ -41,6 +41,61 @@ from `compose.yaml` along with the `depends_on` entry that names it.
 `collection_id` is the data-isolation boundary. Athena applies the collection
 filter during retrieval and checks every returned chunk before responding.
 
+## Asynchronous Conversion
+
+Conversion never happens inside the upload request. `POST /v1/documents/file`
+answers `202 Accepted` with an Athena `job_id`, and the client polls
+`GET /v1/jobs/{job_id}`. Both converters are then driven by submit-and-poll, but
+only Docling's task id is persisted, which is what makes a Docling conversion
+survive an Athena restart.
+
+For Docling, Athena submits the file to
+`POST /v1/chunk/hierarchical/file/async`, records the returned `task_id` on the
+job row before polling starts, then follows `GET /v1/status/poll/{task_id}` until
+the task settles and fetches `GET /v1/result/{task_id}`. The asynchronous route
+is the same hierarchical chunker as the synchronous one, so page and heading
+provenance is preserved; Markdown-only conversion is never substituted, because a
+citation that cannot name a page cannot open one.
+
+Docling's synchronous routes are deliberately unused. They answer `504` once
+`DOCLING_SERVE_MAX_SYNC_WAIT` elapses while the Docling worker keeps running,
+which loses conversions that in fact succeeded. Submitting a task instead means
+the only conversion bound is Athena's own `DOCLING_CONVERSION_DEADLINE_SECONDS`,
+measured from submission, while each individual HTTP request stays bounded by
+`DOCLING_TIMEOUT_SECONDS`.
+
+Because the task id is durable:
+
+- Re-uploading a file whose job is still `accepted` or `processing` returns that
+  job. Uploads are identified by content, so the second request is the same work
+  and no second conversion is submitted.
+- On restart, jobs holding a converter task are resumed against that task rather
+  than failed. Their deadline still runs from the original submission, so a
+  restart grants no extra budget.
+- A task the converter no longer holds -- expired, or lost to a Docling restart
+  -- fails the job with a message that says to upload the file again. So does a
+  task belonging to a converter this deployment is no longer configured with.
+
+Because Docling mints the task id, submitting and recording it cannot be one
+atomic step. If Athena dies in the moment between the two, the task id is lost:
+the job is failed on restart and a retry converts the file again, while the
+orphaned Docling task runs to completion unread. The window is one database write
+wide and the outcome is a wasted conversion rather than incorrect state, but it
+is not zero. Closing it would need an idempotency key on Docling's submit route,
+which its API does not offer.
+
+While a conversion is in flight, a Docling answer that means "not now" -- a 5xx,
+a throttling or auth response, or a transport failure -- is retried rather than
+treated as a failure, for up to five continuous minutes and never past the
+conversion deadline. That window covers a converter restart or a gateway blip
+without discarding an hour of work; a converter that has genuinely gone away
+still fails the job promptly. Result retrieval is retried on the same terms,
+since by then the conversion has already succeeded.
+
+Job details distinguish converter unavailable, refused submission, remote
+conversion failure, a lost task, an exceeded deadline, and a result that could
+not be retrieved. None of them carry a URL or a credential.
+
 ## Sources and Connectors
 
 Athena exposes two ingestion boundaries: normalized text and file upload. It
@@ -70,7 +125,9 @@ write secret values to logs.
 | `ATHENA_RETRIEVAL_MODE` | `hybrid` | `hybrid` or `vector`. |
 | `DOCUMENT_CONVERTER` | `docling` | `docling` or `azure`. Selects which service handles PDF and Office uploads. |
 | `DOCLING_BASE_URL` | `http://docling:5001` | Override for a separately managed Docling service. |
-| `DOCLING_TIMEOUT_SECONDS` | `660` | Per-conversion client timeout. |
+| `DOCLING_TIMEOUT_SECONDS` | `120` | Timeout for one HTTP request to Docling (submit, poll, or result fetch). |
+| `DOCLING_CONVERSION_DEADLINE_SECONDS` | `3600` | Total time one document's conversion may take, measured from submission and across restarts. Must be at least `DOCLING_TIMEOUT_SECONDS`. |
+| `DOCLING_POLL_INTERVAL_SECONDS` | `5` | Delay between Docling task status polls. |
 | `AZURE_OCR_ENDPOINT` | unset | Azure Document Intelligence resource URL. Required when `DOCUMENT_CONVERTER=azure`. |
 | `AZURE_OCR_API_KEY` | unset | Credential for that resource. Required when `DOCUMENT_CONVERTER=azure`; never logged. |
 | `AZURE_OCR_MODEL_ID` | `prebuilt-layout` | Analysis model used for conversion. |
@@ -96,9 +153,16 @@ checksum avoids re-embedding unchanged content. File uploads derive an external
 ID from their content, so re-uploading the same file is idempotent.
 
 Ingestion and conversion run as in-process background work. If Athena restarts,
-interrupted jobs are marked as failed and need to be submitted again. Athena has
-no built-in deletion API, remote object-storage adapter, per-user authorization,
-or remote-system connector.
+a job waiting on a converter task is resumed; any other interrupted job is marked
+as failed and needs to be submitted again. Athena has no built-in deletion API,
+remote object-storage adapter, per-user authorization, or remote-system
+connector.
+
+The Compose deployment sets `DOCLING_SERVE_RESULT_REMOVAL_DELAY=3600` so a
+completed conversion stays fetchable long enough for a restarting Athena to
+collect it. Docling keeps its task state in memory, so restarting the `docling`
+container does lose in-flight tasks; the affected jobs fail with a retryable
+message rather than hanging.
 
 At more than 2,000 embedding dimensions, pgvector cannot build Athena's HNSW
 index, so searches use an exact scan instead.

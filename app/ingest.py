@@ -16,7 +16,14 @@ from llama_index.core.vector_stores.types import BasePydanticVectorStore
 from app.embeddings.pipeline import delete_document_nodes, run_ingestion
 from app.log import logger
 from app.models import RESERVED_METADATA_KEYS, TextDocumentRequest
-from app.parsing import ConvertedDocument, DocumentError, DocumentNormalizer, DocumentSegment, UploadedFile
+from app.parsing import (
+    ConvertedDocument,
+    DocumentError,
+    DocumentNormalizer,
+    DocumentSegment,
+    UploadedFile,
+    resolve_format,
+)
 from app.repository import DocumentRecord, JobRecord, Repository, SourceObjectRecord
 from app.storage import (
     ORIGINAL_VARIANT,
@@ -30,6 +37,16 @@ MAXIMUM_JOB_DETAIL_CHARACTERS = 500
 INTERRUPTED_JOB_DETAIL = "Ingestion was interrupted by a service restart."
 UPLOAD_EXTERNAL_ID_PREFIX = "file-"
 UNEXPECTED_JOB_DETAIL = "Document processing failed unexpectedly. Try again or ask the service owner to check the logs."
+# Left on a job whose converter task cannot be picked up again because this
+# deployment now talks to a different converter than the one holding it.
+CONVERTER_CHANGED_DETAIL = (
+    "The document converter that was processing this file is no longer configured on this "
+    "service. Upload the file again."
+)
+UNRESUMABLE_UPLOAD_DETAIL = (
+    "The upload this conversion belongs to can no longer be identified. Upload the file again."
+)
+_UNFINISHED_JOB_STATUSES = ("accepted", "processing")
 
 
 class MetadataConflictError(ValueError):
@@ -92,6 +109,10 @@ class IngestionService:
         self._normalizer = normalizer
         self._source_store = source_store
         self._locks: dict[tuple[str, str], _DocumentLock] = {}
+        # Held only while an upload decides between reusing a pending job and
+        # creating one. It is separate from the per-document lock because that one
+        # is held for the whole conversion, which can be an hour long.
+        self._accept_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
 
     @asynccontextmanager
@@ -155,16 +176,33 @@ class IngestionService:
         Conversion happens inside the job rather than inside the HTTP request so a
         slow PDF conversion is observable as ``processing`` instead of holding the
         upload connection open.
+
+        Re-uploading a file whose job is still running returns that job instead of
+        starting a second one. Uploads are identified by their content, so the two
+        requests are the same work; converting twice would double the cost of the
+        conversion and, for a remote converter, the bill for it.
         """
-        return await self._accept(
-            submission.collection_id,
-            submission.external_id,
-            lambda job_id: self.run_upload(job_id, submission),
-            title=submission.title,
-            source_type=submission.upload.format.source_type,
-            filename=submission.upload.filename,
-            media_type=submission.upload.media_type,
-        )
+        async with self._accept_lock:
+            pending = await self._repository.get_latest_job(
+                submission.collection_id, submission.external_id
+            )
+            if pending is not None and pending.status in _UNFINISHED_JOB_STATUSES:
+                logger.info(
+                    "Upload %s/%s is already being processed by job %s",
+                    submission.collection_id,
+                    submission.external_id,
+                    pending.job_id,
+                )
+                return pending
+            return await self._accept(
+                submission.collection_id,
+                submission.external_id,
+                lambda job_id: self.run_upload(job_id, submission),
+                title=submission.title,
+                source_type=submission.upload.format.source_type,
+                filename=submission.upload.filename,
+                media_type=submission.upload.media_type,
+            )
 
     async def _accept(
         self,
@@ -188,10 +226,48 @@ class IngestionService:
             media_type=media_type,
         )
         await self._repository.create_job(job)
-        task = asyncio.create_task(self._run_guarded(job.job_id, start))
+        self._spawn(job.job_id, start)
+        return job
+
+    async def resume_conversions(self) -> int:
+        """Pick up converter tasks that outlived the last Athena process.
+
+        Returns the number of jobs resumed. A job whose task belongs to a
+        converter this deployment no longer uses is failed here with a retryable
+        reason rather than left waiting on something nobody will poll.
+        """
+        jobs = await self._repository.list_resumable_jobs()
+        converter = (
+            self._normalizer.resumable_converter if self._normalizer is not None else None
+        )
+        resumed = 0
+        for job in jobs:
+            if converter is None or converter.name != job.converter_name:
+                logger.warning(
+                    "Cannot resume conversion %s for job %s: converter %r is not configured",
+                    job.converter_task_id,
+                    job.job_id,
+                    job.converter_name,
+                )
+                await self._repository.update_job(
+                    job.job_id, status="failed", detail=CONVERTER_CHANGED_DETAIL
+                )
+                continue
+            logger.info(
+                "Resuming converter task %s for job %s", job.converter_task_id, job.job_id
+            )
+            self._spawn(job.job_id, lambda _job_id, job=job: self.resume_upload(job))
+            resumed += 1
+        return resumed
+
+    def _spawn(
+        self,
+        job_id: UUID,
+        start: Callable[[UUID], Coroutine[Any, Any, None]],
+    ) -> None:
+        task = asyncio.create_task(self._run_guarded(job_id, start))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return job
 
     async def wait_for_pending(self) -> None:
         """Await in-flight ingestion so shutdown does not orphan job state."""
@@ -225,15 +301,102 @@ class IngestionService:
         async with self._document_lock((submission.collection_id, submission.external_id)):
             await self._repository.update_job(job_id, status="processing")
             try:
-                request, converted = await self._normalize(submission)
-                # Recorded before indexing so a source stays viewable even when
-                # embedding later fails: the tester can still open what was read.
-                await self._record_normalized_form(submission, converted)
-                await self._index(job_id, request, converted.segments)
+                converted = await self._convert(job_id, submission)
+                await self._finish_upload(job_id, submission, converted)
             except Exception as exc:
                 await self._record_failure(
                     job_id, submission.collection_id, submission.external_id, exc
                 )
+
+    async def resume_upload(self, job: JobRecord) -> None:
+        """Continue a conversion that was submitted before the last restart.
+
+        Nothing is resubmitted: the converter still holds the file under the task
+        id recorded on the job, and its own deadline still runs from when it was
+        submitted, so a task that has since expired fails here rather than being
+        waited on forever.
+        """
+        async with self._document_lock((job.collection_id, job.external_id)):
+            await self._repository.update_job(job.job_id, status="processing")
+            try:
+                submission = self._resumed_submission(job)
+                converted = await self._await_conversion(job)
+                await self._finish_upload(job.job_id, submission, converted)
+            except Exception as exc:
+                await self._record_failure(
+                    job.job_id, job.collection_id, job.external_id, exc
+                )
+
+    def _resumed_submission(self, job: JobRecord) -> UploadSubmission:
+        """Rebuild the upload identity a resumed job needs, from its own row.
+
+        The file's bytes are deliberately not reloaded: the converter already has
+        them, and everything left to do -- metadata, the preview, the index --
+        needs only the identity and the format.
+        """
+        if self._normalizer is None or not job.filename:  # pragma: no cover - defensive
+            raise DocumentError(UNRESUMABLE_UPLOAD_DETAIL)
+        upload_format = resolve_format(job.filename, job.media_type)
+        return UploadSubmission(
+            collection_id=job.collection_id,
+            external_id=job.external_id,
+            title=job.title,
+            upload=UploadedFile(
+                filename=job.filename,
+                media_type=job.media_type or upload_format.canonical_media_type,
+                content=b"",
+                format=upload_format,
+            ),
+        )
+
+    async def _convert(
+        self, job_id: UUID, submission: UploadSubmission
+    ) -> ConvertedDocument:
+        """Produce normalized text for *submission*, recording resumable work first."""
+        if self._normalizer is None:  # pragma: no cover - defensive
+            raise RuntimeError("File uploads are not enabled on this service.")
+        converter = self._normalizer.resumable_converter
+        if not submission.upload.format.needs_conversion or converter is None:
+            return await self._normalizer.to_document(submission.upload)
+
+        task_id = await self._normalizer.submit_conversion(submission.upload)
+        submitted_at = datetime.now(UTC)
+        # Persisted before the first poll, so a restart one moment later still
+        # finds the remote task instead of resubmitting the document.
+        await self._repository.set_job_conversion_task(
+            job_id,
+            converter_name=converter.name,
+            task_id=task_id,
+            submitted_at=submitted_at,
+        )
+        logger.info(
+            "Submitted %s to %s as task %s",
+            submission.upload.filename,
+            converter.name,
+            task_id,
+        )
+        return await self._normalizer.await_conversion(task_id, submitted_at=submitted_at)
+
+    async def _await_conversion(self, job: JobRecord) -> ConvertedDocument:
+        if self._normalizer is None:  # pragma: no cover - defensive
+            raise RuntimeError("File uploads are not enabled on this service.")
+        if not job.converter_task_id or job.converter_submitted_at is None:  # pragma: no cover
+            raise DocumentError(UNRESUMABLE_UPLOAD_DETAIL)
+        return await self._normalizer.await_conversion(
+            job.converter_task_id, submitted_at=job.converter_submitted_at
+        )
+
+    async def _finish_upload(
+        self,
+        job_id: UUID,
+        submission: UploadSubmission,
+        converted: ConvertedDocument,
+    ) -> None:
+        request = _upload_request(submission, converted)
+        # Recorded before indexing so a source stays viewable even when
+        # embedding later fails: the tester can still open what was read.
+        await self._record_normalized_form(submission, converted)
+        await self._index(job_id, request, converted.segments)
 
     async def _record_failure(
         self,
@@ -249,24 +412,6 @@ class IngestionService:
         else:
             logger.exception("Ingestion failed for %s/%s", collection_id, external_id)
         await self._repository.update_job(job_id, status="failed", detail=_job_detail(exc))
-
-    async def _normalize(
-        self, submission: UploadSubmission
-    ) -> tuple[TextDocumentRequest, ConvertedDocument]:
-        if self._normalizer is None:  # pragma: no cover - defensive
-            raise RuntimeError("File uploads are not enabled on this service.")
-        upload = submission.upload
-        converted = await self._normalizer.to_document(upload)
-        request = TextDocumentRequest(
-            collection_id=submission.collection_id,
-            external_id=submission.external_id,
-            text=converted.text,
-            title=submission.title,
-            source_type=upload.format.source_type,
-            source_uri=f"upload:{submission.external_id}",
-            metadata={"filename": upload.filename, "media_type": upload.media_type},
-        )
-        return request, converted
 
     async def _record_normalized_form(
         self, submission: UploadSubmission, converted: ConvertedDocument
@@ -388,6 +533,22 @@ class IngestionService:
             request.collection_id,
             request.external_id,
         )
+
+
+def _upload_request(
+    submission: UploadSubmission, converted: ConvertedDocument
+) -> TextDocumentRequest:
+    """The normalized-text request an uploaded file reduces to."""
+    upload = submission.upload
+    return TextDocumentRequest(
+        collection_id=submission.collection_id,
+        external_id=submission.external_id,
+        text=converted.text,
+        title=submission.title,
+        source_type=upload.format.source_type,
+        source_uri=f"upload:{submission.external_id}",
+        metadata={"filename": upload.filename, "media_type": upload.media_type},
+    )
 
 
 def _build_nodes(

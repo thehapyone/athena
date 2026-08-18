@@ -101,7 +101,11 @@ def test_upload_and_conversion_defaults(base_env: dict[str, str]) -> None:
     assert settings.max_filename_characters == 255
     assert settings.document_converter == "docling"
     assert settings.docling_base_url == ""
-    assert settings.docling_timeout_seconds == 660
+    assert settings.docling_timeout_seconds == 120
+    # An hour, so a slow scanned PDF is not cut off by Athena while Docling is
+    # still working on it.
+    assert settings.docling_conversion_deadline_seconds == 3_600
+    assert settings.docling_poll_interval_seconds == 5
     assert settings.azure_ocr_endpoint == ""
     assert settings.azure_ocr_model_id == "prebuilt-layout"
     assert settings.azure_ocr_timeout_seconds == 300
@@ -116,6 +120,55 @@ def test_a_configured_docling_url_enables_conversion(base_env: dict[str, str]) -
     assert settings.docling_base_url == "http://docling:5001"
     assert settings.docling_timeout_seconds == 45
     assert settings.conversion_configured is True
+
+
+def test_async_conversion_bounds_are_configurable(base_env: dict[str, str]) -> None:
+    settings = Settings.from_env(
+        {
+            **base_env,
+            "DOCLING_CONVERSION_DEADLINE_SECONDS": "7200",
+            "DOCLING_POLL_INTERVAL_SECONDS": "15",
+        }
+    )
+
+    assert settings.docling_conversion_deadline_seconds == 7_200
+    assert settings.docling_poll_interval_seconds == 15
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("DOCLING_CONVERSION_DEADLINE_SECONDS", "30"),
+        ("DOCLING_CONVERSION_DEADLINE_SECONDS", "90000"),
+        ("DOCLING_CONVERSION_DEADLINE_SECONDS", "an hour"),
+        ("DOCLING_POLL_INTERVAL_SECONDS", "0"),
+        ("DOCLING_POLL_INTERVAL_SECONDS", "600"),
+    ],
+)
+def test_out_of_range_async_conversion_bounds_are_rejected(
+    base_env: dict[str, str], name: str, value: str
+) -> None:
+    with pytest.raises(ConfigurationError, match=name):
+        Settings.from_env({**base_env, name: value})
+
+
+def test_the_deadline_must_cover_a_single_request(base_env: dict[str, str]) -> None:
+    """A per-request timeout longer than the whole deadline can never be reached."""
+    with pytest.raises(ConfigurationError, match="DOCLING_CONVERSION_DEADLINE_SECONDS"):
+        Settings.from_env(
+            {
+                **base_env,
+                "DOCLING_TIMEOUT_SECONDS": "600",
+                "DOCLING_CONVERSION_DEADLINE_SECONDS": "120",
+            }
+        )
+
+
+def test_the_deadline_is_reported_without_secrets(base_env: dict[str, str]) -> None:
+    redacted = Settings.from_env(base_env).redacted()
+
+    assert redacted["docling_conversion_deadline_seconds"] == 3_600
+    assert redacted["docling_poll_interval_seconds"] == 5
 
 
 @pytest.mark.parametrize("value", ["docling:5001", "ftp://docling", "/relative"])

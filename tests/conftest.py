@@ -15,6 +15,7 @@ from tests.fakes import (
     DeterministicEmbedding,
     InMemoryRepository,
     InMemorySourceStore,
+    RecordingAsyncConverter,
     RecordingConverter,
     RecordingVectorStore,
 )
@@ -68,6 +69,23 @@ def converter() -> RecordingConverter:
 
 
 @pytest.fixture
+def async_converter() -> RecordingAsyncConverter:
+    """A converter whose conversions are resumable by task id, as Docling's are."""
+    return RecordingAsyncConverter()
+
+
+@pytest.fixture
+def converter_mode(request: pytest.FixtureRequest) -> str:
+    """Which converter double the runtime is wired with.
+
+    Override with
+    ``@pytest.mark.parametrize("converter_mode", ["async"], indirect=True)`` to
+    exercise the submit-then-poll path the Docling client uses.
+    """
+    return getattr(request, "param", "sync")
+
+
+@pytest.fixture
 def source_store() -> InMemorySourceStore:
     return InMemorySourceStore()
 
@@ -90,10 +108,13 @@ def runtime_factory(
     vector_store: RecordingVectorStore,
     embed_model: DeterministicEmbedding,
     converter: RecordingConverter,
+    async_converter: RecordingAsyncConverter,
+    converter_mode: str,
     conversion_enabled: bool,
     source_store: InMemorySourceStore,
 ):
     """Build the same Runtime shape as production, with deterministic parts."""
+    selected = async_converter if converter_mode == "async" else converter
 
     async def factory(settings: Settings) -> Runtime:
         pipeline = build_ingestion_pipeline(
@@ -111,7 +132,7 @@ def runtime_factory(
                 vector_store=vector_store,
                 pipeline=pipeline,
                 normalizer=DocumentNormalizer(
-                    converter=converter if conversion_enabled else None,
+                    converter=selected if conversion_enabled else None,
                     max_text_bytes=settings.max_document_bytes,
                 ),
                 source_store=source_store,
