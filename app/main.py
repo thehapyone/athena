@@ -52,7 +52,9 @@ from app.models import (
     TextDocumentRequest,
 )
 from app.parsing import (
+    AzureDocumentIntelligenceClient,
     DoclingClient,
+    DocumentConverter,
     DocumentDecodeError,
     DocumentError,
     DocumentNormalizer,
@@ -119,6 +121,53 @@ class EmbeddingModelMismatchError(RuntimeError):
     """Raised when the configured embedding model differs from the indexed one."""
 
 
+def _build_converter(
+    settings: Settings,
+) -> tuple[httpx.AsyncClient | None, DocumentConverter | None]:
+    """Build the configured document converter, if any.
+
+    Returns the ``httpx.AsyncClient`` alongside the converter so the caller can
+    close it on shutdown; there is nothing to close when no converter is
+    configured.
+    """
+    if not settings.conversion_configured:
+        logger.info(
+            "%s is unset; only text and Markdown uploads can be normalized",
+            "AZURE_OCR_ENDPOINT/AZURE_OCR_API_KEY"
+            if settings.document_converter == "azure"
+            else "DOCLING_BASE_URL",
+        )
+        return None, None
+
+    if settings.document_converter == "azure":
+        # AzureDocumentIntelligenceClient sets its own per-request timeout on
+        # every call, capped to whatever is left of AZURE_OCR_TIMEOUT_SECONDS,
+        # so the client itself needs no timeout of its own.
+        http_client = httpx.AsyncClient()
+        converter: DocumentConverter = AzureDocumentIntelligenceClient(
+            settings.azure_ocr_endpoint,
+            settings.azure_ocr_api_key,
+            http_client,
+            model_id=settings.azure_ocr_model_id,
+            timeout_seconds=settings.azure_ocr_timeout_seconds,
+            max_response_bytes=settings.max_document_bytes + REQUEST_OVERHEAD_BYTES,
+        )
+        logger.info(
+            "Document conversion enabled via Azure Document Intelligence (%s)",
+            settings.azure_ocr_endpoint,
+        )
+        return http_client, converter
+
+    http_client = httpx.AsyncClient(timeout=float(settings.docling_timeout_seconds))
+    converter = DoclingClient(
+        settings.docling_base_url,
+        http_client,
+        max_response_bytes=settings.max_document_bytes + REQUEST_OVERHEAD_BYTES,
+    )
+    logger.info("Document conversion enabled via %s", settings.docling_base_url)
+    return http_client, converter
+
+
 async def build_runtime(settings: Settings) -> Runtime:
     """Create the production runtime: PostgreSQL, pgvector, and the embedder."""
     pool = await create_pool(settings)
@@ -138,20 +187,7 @@ async def build_runtime(settings: Settings) -> Runtime:
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
     )
-    docling_http: httpx.AsyncClient | None = None
-    converter: DoclingClient | None = None
-    if settings.conversion_configured:
-        docling_http = httpx.AsyncClient(timeout=float(settings.docling_timeout_seconds))
-        converter = DoclingClient(
-            settings.docling_base_url,
-            docling_http,
-            max_response_bytes=settings.max_document_bytes + REQUEST_OVERHEAD_BYTES,
-        )
-        logger.info("Document conversion enabled via %s", settings.docling_base_url)
-    else:
-        logger.info(
-            "DOCLING_BASE_URL is unset; only text and Markdown uploads can be normalized"
-        )
+    converter_http, converter = _build_converter(settings)
     source_store = LocalFileSourceStore(settings.source_storage_dir)
     # A broken or read-only volume must fail startup: an upload that indexes but
     # loses its original would look fine and then have nothing to show.
@@ -167,8 +203,8 @@ async def build_runtime(settings: Settings) -> Runtime:
     )
 
     async def close() -> None:
-        if docling_http is not None:
-            await docling_http.aclose()
+        if converter_http is not None:
+            await converter_http.aclose()
         await vector_store.close()
         await pool.close()
 

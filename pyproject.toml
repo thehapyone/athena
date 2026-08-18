@@ -11,7 +11,8 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.34",
   "pydantic>=2.9",
-  # Multipart parsing for POST /v1/documents/file; httpx reaches docling-serve.
+  # Multipart parsing for POST /v1/documents/file; httpx reaches docling-serve
+  # or Azure Document Intelligence.
   "python-multipart>=0.0.18",
   "httpx>=0.27",
   "llama-index-core>=0.14",

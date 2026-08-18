@@ -1,5 +1,6 @@
 """Upload validation and normalization behind a converter-agnostic adapter."""
 
+from app.parsing.azure_di import AzureDocumentIntelligenceClient
 from app.parsing.docling import DoclingClient
 from app.parsing.errors import (
     ConversionFailedError,
@@ -28,6 +29,7 @@ from app.parsing.segments import (
 __all__ = [
     "SUPPORTED_EXTENSIONS",
     "SUPPORTED_FORMATS",
+    "AzureDocumentIntelligenceClient",
     "ConversionFailedError",
     "ConversionUnavailableError",
     "ConvertedDocument",

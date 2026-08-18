@@ -13,6 +13,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 RetrievalMode = Literal["hybrid", "vector"]
+DocumentConverterBackend = Literal["docling", "azure"]
 
 VECTOR_TABLE_NAME = "athena_vectors"
 MINIMUM_API_TOKEN_LENGTH = 16
@@ -50,13 +51,20 @@ class Settings:
     max_upload_bytes: int
     max_filename_characters: int
     source_storage_dir: str
+    document_converter: DocumentConverterBackend
     docling_base_url: str
     docling_timeout_seconds: int
+    azure_ocr_endpoint: str
+    azure_ocr_api_key: str
+    azure_ocr_model_id: str
+    azure_ocr_timeout_seconds: int
     log_level: str
 
     @property
     def conversion_configured(self) -> bool:
         """Whether uploads that need a converter (PDF, Office) can be processed."""
+        if self.document_converter == "azure":
+            return bool(self.azure_ocr_endpoint and self.azure_ocr_api_key)
         return bool(self.docling_base_url)
 
     @property
@@ -89,8 +97,12 @@ class Settings:
             "max_document_bytes": self.max_document_bytes,
             "max_upload_bytes": self.max_upload_bytes,
             "source_storage_dir": self.source_storage_dir,
+            "document_converter": self.document_converter,
             "docling_base_url": self.docling_base_url or "(unset)",
             "docling_timeout_seconds": self.docling_timeout_seconds,
+            "azure_ocr_endpoint": self.azure_ocr_endpoint or "(unset)",
+            "azure_ocr_model_id": self.azure_ocr_model_id,
+            "azure_ocr_timeout_seconds": self.azure_ocr_timeout_seconds,
             "log_level": self.log_level,
         }
 
@@ -155,6 +167,10 @@ class Settings:
                 "ATHENA_SOURCE_STORAGE_DIR must be an absolute path."
             )
 
+        document_converter = _text(source, "DOCUMENT_CONVERTER", "docling").lower()
+        if document_converter not in ("docling", "azure"):
+            raise ConfigurationError("DOCUMENT_CONVERTER must be 'docling' or 'azure'.")
+
         # Docling is optional: without it, text and Markdown uploads still work and
         # formats that need conversion fail per job with an explicit message.
         docling_base_url = _text(source, "DOCLING_BASE_URL", "").rstrip("/")
@@ -165,6 +181,26 @@ class Settings:
                     "DOCLING_BASE_URL must be an absolute http(s) URL pointing at a docling-serve "
                     "instance (for example http://docling:5001)."
                 )
+
+        # Azure Document Intelligence is the cloud alternative to Docling. Its
+        # fields are validated whenever set, regardless of which backend is
+        # selected, but are only required when DOCUMENT_CONVERTER=azure: unlike
+        # Docling there is no self-hosted, keyless deployment of it.
+        azure_ocr_endpoint = _text(source, "AZURE_OCR_ENDPOINT", "").rstrip("/")
+        if azure_ocr_endpoint:
+            azure_endpoint = urlsplit(azure_ocr_endpoint)
+            if azure_endpoint.scheme not in ("http", "https") or not azure_endpoint.netloc:
+                raise ConfigurationError(
+                    "AZURE_OCR_ENDPOINT must be an absolute http(s) URL pointing at an Azure "
+                    "Document Intelligence resource (for example "
+                    "https://<resource>.cognitiveservices.azure.com)."
+                )
+        azure_ocr_api_key = _text(source, "AZURE_OCR_API_KEY", "")
+        if document_converter == "azure" and not (azure_ocr_endpoint and azure_ocr_api_key):
+            raise ConfigurationError(
+                "AZURE_OCR_ENDPOINT and AZURE_OCR_API_KEY are both required when "
+                "DOCUMENT_CONVERTER=azure."
+            )
 
         return cls(
             database_url=database_url,
@@ -194,8 +230,13 @@ class Settings:
                 source, "ATHENA_MAX_FILENAME_CHARACTERS", 255, 16, 1_024
             ),
             source_storage_dir=source_storage_dir,
+            document_converter=document_converter,  # type: ignore[arg-type]
             docling_base_url=docling_base_url,
             docling_timeout_seconds=_integer(source, "DOCLING_TIMEOUT_SECONDS", 660, 5, 900),
+            azure_ocr_endpoint=azure_ocr_endpoint,
+            azure_ocr_api_key=azure_ocr_api_key,
+            azure_ocr_model_id=_text(source, "AZURE_OCR_MODEL_ID", "prebuilt-layout"),
+            azure_ocr_timeout_seconds=_integer(source, "AZURE_OCR_TIMEOUT_SECONDS", 300, 5, 900),
             log_level=_text(source, "ATHENA_LOG_LEVEL", "INFO").upper(),
         )
 

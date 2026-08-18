@@ -92,7 +92,7 @@ easy to connect the systems your agent already uses.
 | --- | --- |
 | Database records, SaaS exports, web crawlers, or custom connectors | `POST /v1/documents/text` |
 | Local and application-uploaded documents | `POST /v1/documents/file` |
-| PDF, Word, PowerPoint, Excel, and HTML | File upload; the included Docling service converts them. |
+| PDF, Word, PowerPoint, Excel, and HTML | File upload; Docling converts them by default, or Azure AI Document Intelligence when configured. |
 
 Athena does not bundle direct connectors for S3, Google Drive, Notion, GitHub,
 or websites. Keep source-specific authentication and sync logic with the owning

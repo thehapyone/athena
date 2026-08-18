@@ -25,8 +25,13 @@ services:
       ATHENA_RETRIEVAL_MODE: ${ATHENA_RETRIEVAL_MODE:-hybrid}
       ATHENA_LOG_LEVEL: ${ATHENA_LOG_LEVEL:-INFO}
       ATHENA_SOURCE_STORAGE_DIR: /var/lib/athena/sources
+      DOCUMENT_CONVERTER: ${DOCUMENT_CONVERTER:-docling}
       DOCLING_BASE_URL: ${DOCLING_BASE_URL:-http://docling:5001}
       DOCLING_TIMEOUT_SECONDS: ${DOCLING_TIMEOUT_SECONDS:-660}
+      AZURE_OCR_ENDPOINT: ${AZURE_OCR_ENDPOINT:-}
+      AZURE_OCR_API_KEY: ${AZURE_OCR_API_KEY:-}
+      AZURE_OCR_MODEL_ID: ${AZURE_OCR_MODEL_ID:-prebuilt-layout}
+      AZURE_OCR_TIMEOUT_SECONDS: ${AZURE_OCR_TIMEOUT_SECONDS:-300}
     volumes:
       - athena-source-data:/var/lib/athena/sources
     tmpfs:

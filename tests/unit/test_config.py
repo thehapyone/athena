@@ -99,8 +99,12 @@ def test_upload_and_conversion_defaults(base_env: dict[str, str]) -> None:
 
     assert settings.max_upload_bytes == 50 * 1024 * 1024
     assert settings.max_filename_characters == 255
+    assert settings.document_converter == "docling"
     assert settings.docling_base_url == ""
     assert settings.docling_timeout_seconds == 660
+    assert settings.azure_ocr_endpoint == ""
+    assert settings.azure_ocr_model_id == "prebuilt-layout"
+    assert settings.azure_ocr_timeout_seconds == 300
     assert settings.conversion_configured is False
 
 
@@ -120,6 +124,62 @@ def test_a_docling_url_must_be_absolute_http(base_env: dict[str, str], value: st
         Settings.from_env({**base_env, "DOCLING_BASE_URL": value})
 
 
+def test_an_unknown_document_converter_is_rejected(base_env: dict[str, str]) -> None:
+    with pytest.raises(ConfigurationError, match="DOCUMENT_CONVERTER"):
+        Settings.from_env({**base_env, "DOCUMENT_CONVERTER": "textract"})
+
+
+def test_azure_document_converter_requires_endpoint_and_key(base_env: dict[str, str]) -> None:
+    with pytest.raises(ConfigurationError, match="AZURE_OCR_ENDPOINT"):
+        Settings.from_env({**base_env, "DOCUMENT_CONVERTER": "azure"})
+
+    with pytest.raises(ConfigurationError, match="AZURE_OCR_ENDPOINT"):
+        Settings.from_env(
+            {
+                **base_env,
+                "DOCUMENT_CONVERTER": "azure",
+                "AZURE_OCR_API_KEY": "a-key",
+            }
+        )
+
+    with pytest.raises(ConfigurationError, match="AZURE_OCR_ENDPOINT"):
+        Settings.from_env(
+            {
+                **base_env,
+                "DOCUMENT_CONVERTER": "azure",
+                "AZURE_OCR_ENDPOINT": "https://resource.cognitiveservices.azure.com",
+            }
+        )
+
+
+def test_a_configured_azure_converter_enables_conversion(base_env: dict[str, str]) -> None:
+    settings = Settings.from_env(
+        {
+            **base_env,
+            "DOCUMENT_CONVERTER": "azure",
+            "AZURE_OCR_ENDPOINT": "https://resource.cognitiveservices.azure.com/",
+            "AZURE_OCR_API_KEY": "a-key",
+            "AZURE_OCR_MODEL_ID": "prebuilt-read",
+            "AZURE_OCR_TIMEOUT_SECONDS": "45",
+        }
+    )
+
+    assert settings.document_converter == "azure"
+    assert settings.azure_ocr_endpoint == "https://resource.cognitiveservices.azure.com"
+    assert settings.azure_ocr_api_key == "a-key"
+    assert settings.azure_ocr_model_id == "prebuilt-read"
+    assert settings.azure_ocr_timeout_seconds == 45
+    assert settings.conversion_configured is True
+    # Docling stays optional and unrelated when Azure is the selected backend.
+    assert settings.docling_base_url == ""
+
+
+@pytest.mark.parametrize("value", ["resource.cognitiveservices.azure.com", "ftp://resource", "/relative"])
+def test_an_azure_endpoint_must_be_absolute_http(base_env: dict[str, str], value: str) -> None:
+    with pytest.raises(ConfigurationError, match="AZURE_OCR_ENDPOINT"):
+        Settings.from_env({**base_env, "AZURE_OCR_ENDPOINT": value})
+
+
 def test_upload_limits_are_bounded(base_env: dict[str, str]) -> None:
     with pytest.raises(ConfigurationError, match="ATHENA_MAX_UPLOAD_BYTES"):
         Settings.from_env({**base_env, "ATHENA_MAX_UPLOAD_BYTES": "1"})
@@ -135,12 +195,23 @@ def test_upload_limits_are_bounded(base_env: dict[str, str]) -> None:
 
 
 def test_redacted_settings_never_include_secrets(base_env: dict[str, str]) -> None:
-    settings = Settings.from_env({**base_env, "DOCLING_BASE_URL": "http://docling:5001"})
+    settings = Settings.from_env(
+        {
+            **base_env,
+            "DOCLING_BASE_URL": "http://docling:5001",
+            "AZURE_OCR_ENDPOINT": "https://resource.cognitiveservices.azure.com",
+            "AZURE_OCR_API_KEY": "a-secret-azure-key",
+        }
+    )
 
     redacted = settings.redacted()
 
     assert redacted["docling_base_url"] == "http://docling:5001"
+    assert redacted["document_converter"] == "docling"
+    assert redacted["azure_ocr_endpoint"] == "https://resource.cognitiveservices.azure.com"
+    assert "azure_ocr_api_key" not in redacted
     assert redacted["max_upload_bytes"] == 50 * 1024 * 1024
     serialized = str(redacted)
     assert settings.api_token not in serialized
     assert settings.embedding_api_key not in serialized
+    assert settings.azure_ocr_api_key not in serialized
