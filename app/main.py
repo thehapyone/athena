@@ -88,6 +88,18 @@ from app.storage import (
 API_PREFIX = "/v1"
 # Allow room for JSON envelope and multipart framing above the raw payload limit.
 REQUEST_OVERHEAD_BYTES = 128 * 1024
+# Unlike Docling's response, Azure's analysis result embeds a bounding polygon
+# per word for the whole document plus a full duplicate of the extracted text,
+# so it runs tens of times larger than the useful text (measured ~36x on a
+# real 26-page PDF). Tying this to ATHENA_MAX_DOCUMENT_BYTES, as Docling's cap
+# is, would reject legitimate large documents long before their extracted text
+# actually exceeded that setting. 500 MiB is Azure's own documented ceiling on
+# a single analysis response ("Max size of OCR json response" in Azure
+# Document Intelligence's service limits) for both pricing tiers, so this cap
+# only ever binds against a misbehaving or compromised endpoint, never a
+# well-behaved one -- the extracted text itself is still bounded separately,
+# after parsing, by ATHENA_MAX_DOCUMENT_BYTES.
+_AZURE_OCR_MAX_RESPONSE_BYTES = 500 * 1024 * 1024
 MAXIMUM_TITLE_CHARACTERS = 512
 _COLLECTION_ID = TypeAdapter(CollectionId)
 _EXTERNAL_ID = TypeAdapter(ExternalId)
@@ -150,7 +162,7 @@ def _build_converter(
             http_client,
             model_id=settings.azure_ocr_model_id,
             timeout_seconds=settings.azure_ocr_timeout_seconds,
-            max_response_bytes=settings.max_document_bytes + REQUEST_OVERHEAD_BYTES,
+            max_response_bytes=_AZURE_OCR_MAX_RESPONSE_BYTES,
         )
         logger.info(
             "Document conversion enabled via Azure Document Intelligence (%s)",

@@ -76,6 +76,13 @@ write secret values to logs.
 | `AZURE_OCR_MODEL_ID` | `prebuilt-layout` | Analysis model used for conversion. |
 | `AZURE_OCR_TIMEOUT_SECONDS` | `300` | Total time allowed for one document's analysis, including polling. |
 
+The binding size limit on an upload is normally `ATHENA_MAX_UPLOAD_BYTES`
+(50 MiB max), well under Azure Document Intelligence's own per-tier ceiling
+(500 MB / 2,000 pages on Standard; 4 MB / 2 pages on the Free tier). The
+extracted text is separately bounded by `ATHENA_MAX_DOCUMENT_BYTES`. A large
+increase to `ATHENA_MAX_UPLOAD_BYTES` for Azure conversion should stay well
+under Azure's own per-tier limits.
+
 For deployments outside Compose, Athena also supports `ATHENA_DATABASE_URL`,
 `ATHENA_API_TOKEN`, `ATHENA_DB_SCHEMA`, `ATHENA_SOURCE_STORAGE_DIR`, chunking
 controls, search-result limits, and
