@@ -72,6 +72,7 @@ def client_with(
         request_timeout_seconds=120,
         deadline_seconds=deadline_seconds,
         poll_interval_seconds=poll_interval_seconds,
+        max_chunk_tokens=800,
     )
 
 
@@ -151,6 +152,70 @@ async def test_submission_posts_the_async_chunk_route_and_returns_a_task_id(
     assert b'name="files"; filename="report.pdf"' in body
     assert b"%PDF-1.7" in body
     assert b'name="include_converted_doc"' in body
+    assert b'name="chunking_max_tokens"' in body and b"800" in body
+    assert b'name="chunking_use_markdown_tables"' in body
+
+
+async def test_the_converters_table_structure_is_carried_into_segments(
+    clock: FakeClock,
+) -> None:
+    handler = scripted(
+        statuses=["success"],
+        result=result_body(
+            [
+                {
+                    "text": "Alarm codes are listed below.",
+                    "page_numbers": [111],
+                    "headings": ["7.4 Alarm troubleshooting"],
+                    "doc_items": ["#/texts/12"],
+                },
+                {
+                    "text": "| Alarm | Action |\n| --- | --- |\n| E-142 | Replace SV-3 |",
+                    "page_numbers": [112],
+                    "headings": ["7.4 Alarm troubleshooting"],
+                    "captions": ["Table 7-4 Alarm codes"],
+                    "doc_items": ["#/tables/0"],
+                },
+            ]
+        ),
+    )
+
+    converted = await convert(client_with(handler))
+
+    assert [(segment.is_table, segment.caption) for segment in converted.segments] == [
+        (False, ""),
+        (True, "Table 7-4 Alarm codes"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "doc_items",
+    [None, [], "#/tables/0", ["#/texts/1"], [None], [{"self_ref": "#/tables/0"}]],
+)
+async def test_only_a_table_reference_marks_a_segment_as_a_table(
+    clock: FakeClock, doc_items: object
+) -> None:
+    handler = scripted(
+        statuses=["success"],
+        result=result_body([{"text": "Body text.", "doc_items": doc_items}]),
+    )
+
+    converted = await convert(client_with(handler))
+
+    assert converted.segments[0].is_table is False
+
+
+async def test_an_unusable_caption_is_dropped(clock: FakeClock) -> None:
+    handler = scripted(
+        statuses=["success"],
+        result=result_body(
+            [{"text": "Body.", "doc_items": ["#/tables/0"], "captions": [None, "  ", "Real"]}]
+        ),
+    )
+
+    converted = await convert(client_with(handler))
+
+    assert converted.segments[0].caption == "Real"
 
 
 async def test_a_conversion_is_polled_to_completion_and_keeps_page_provenance(

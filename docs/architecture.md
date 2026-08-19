@@ -33,8 +33,10 @@ from `compose.yaml` along with the `depends_on` entry that names it.
 3. Text and Markdown are normalized in Athena. Other supported files are sent
    to the configured document converter -- Docling by default, or Azure AI
    Document Intelligence when `DOCUMENT_CONVERTER=azure` -- which returns text
-   and, when available, page and heading context.
-4. Athena chunks the text, requests embeddings, and stores vectors in pgvector.
+   and, when available, page, heading, and table context.
+4. Athena splits anything the converter did not already size, prefixes each chunk
+   with its document title, heading, and page, requests embeddings, and stores
+   vectors in pgvector.
 5. A client searches explicit collection IDs and receives ranked passages with
    source metadata and citations.
 
@@ -49,13 +51,25 @@ answers `202 Accepted` with an Athena `job_id`, and the client polls
 only Docling's task id is persisted, which is what makes a Docling conversion
 survive an Athena restart.
 
-For Docling, Athena submits the file to
-`POST /v1/chunk/hierarchical/file/async`, records the returned `task_id` on the
-job row before polling starts, then follows `GET /v1/status/poll/{task_id}` until
-the task settles and fetches `GET /v1/result/{task_id}`. The asynchronous route
-is the same hierarchical chunker as the synchronous one, so page and heading
-provenance is preserved; Markdown-only conversion is never substituted, because a
-citation that cannot name a page cannot open one.
+For Docling, Athena submits the file to `POST /v1/chunk/hybrid/file/async`,
+records the returned `task_id` on the job row before polling starts, then follows
+`GET /v1/status/poll/{task_id}` until the task settles and fetches
+`GET /v1/result/{task_id}`. Markdown-only conversion is never substituted, because
+a citation that cannot name a page cannot open one.
+
+The hybrid chunker is used rather than the hierarchical one because it honours
+`chunking_max_tokens`, which Athena sets to `ATHENA_CHUNK_SIZE`. Chunks therefore
+arrive already sized, and Athena re-splits only what a converter did not size for
+it. Two further options shape the result: `chunking_use_markdown_tables` returns
+tables as Markdown rows instead of triplets, so a table that still exceeds the
+budget can be split on row boundaries with its header repeated, and each chunk's
+`doc_items` self-references (`#/tables/0`) are what identify a table at all. Table
+structure is therefore read from the converter, never guessed from the text.
+
+Because the hybrid chunker counts tokens with a HuggingFace tokenizer
+(`sentence-transformers/all-MiniLM-L6-v2` by default), the Docling container needs
+that tokenizer available. A chunk budget is consequently approximate with respect
+to the embedding model's own tokenization.
 
 Docling's synchronous routes are deliberately unused. They answer `504` once
 `DOCLING_SERVE_MAX_SYNC_WAIT` elapses while the Docling worker keeps running,

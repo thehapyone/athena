@@ -576,6 +576,8 @@ def _build_nodes(
             text=segment.text,
             page=segment.page if segment.page is not None else request.page,
             section=segment.section or request.section,
+            is_table=segment.is_table,
+            caption=segment.caption,
         )
         for segment in located
     ]
@@ -590,6 +592,8 @@ def _build_node(
     text: str,
     page: int | None,
     section: str,
+    is_table: bool = False,
+    caption: str = "",
 ) -> TextNode:
     metadata: dict[str, object] = {
         "collection_id": request.collection_id,
@@ -606,6 +610,11 @@ def _build_node(
     }
     if page is not None:
         metadata["page"] = page
+    # Structure the chunker reads and embeddings must not see.
+    if is_table:
+        metadata["is_table"] = True
+    if caption:
+        metadata["caption"] = caption
     metadata.update(request.metadata)
 
     node = TextNode(text=text, metadata=metadata)

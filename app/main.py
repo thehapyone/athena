@@ -181,6 +181,7 @@ def _build_converter(
         request_timeout_seconds=settings.docling_timeout_seconds,
         deadline_seconds=settings.docling_conversion_deadline_seconds,
         poll_interval_seconds=settings.docling_poll_interval_seconds,
+        max_chunk_tokens=settings.chunk_size,
     )
     logger.info(
         "Document conversion enabled via %s, deadline %ds",

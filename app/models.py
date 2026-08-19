@@ -39,6 +39,10 @@ RESERVED_METADATA_KEYS = frozenset(
         "embedding_dim",
         "filename",
         "media_type",
+        "is_table",
+        "table_part",
+        "table_parts",
+        "caption",
     }
 )
 

@@ -1,16 +1,15 @@
 """LlamaIndex ingestion pipeline over PostgreSQL/pgvector."""
 
-import re
 from typing import Any
 
 from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.ingestion import IngestionPipeline
-from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import BaseNode
 from llama_index.core.vector_stores.types import BasePydanticVectorStore
 from llama_index.vector_stores.postgres import PGVectorStore
 
 from app.config import Settings
+from app.embeddings.chunking import StructuralChunker
 from app.log import logger
 
 # pgvector's HNSW index cannot be built above 2000 dimensions. Larger embeddings
@@ -23,13 +22,6 @@ _HNSW_KWARGS: dict[str, Any] = {
     "hnsw_ef_search": 40,
     "hnsw_dist_method": "vector_cosine_ops",
 }
-
-_SENTENCE_PATTERN = re.compile(r"[^.!?\n]+(?:[.!?]+|\n+)|[^.!?\n]+$")
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split sentences and manual lines without NLTK or downloaded corpora."""
-    return _SENTENCE_PATTERN.findall(text)
 
 
 def build_vector_store(settings: Settings) -> PGVectorStore:
@@ -72,11 +64,7 @@ def build_ingestion_pipeline(
     """
     return IngestionPipeline(
         transformations=[
-            SentenceSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                chunking_tokenizer_fn=_split_sentences,
-            ),
+            StructuralChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap),
             embed_model,
         ],
         vector_store=vector_store,

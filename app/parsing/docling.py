@@ -2,13 +2,21 @@
 
 Three endpoints of the pinned v1.30.0 contract are used:
 
-``POST {base}/v1/chunk/hierarchical/file/async``
+``POST {base}/v1/chunk/hybrid/file/async``
     Submits one file and answers ``{"task_id": ..., "task_status": ...}``. This is
-    the asynchronous form of the hierarchical chunk route, so it keeps the
-    structural provenance the viewer needs -- per-chunk ``page_numbers`` and
-    ``headings``. Markdown conversion is deliberately not used as a fallback:
-    it flattens away the page a passage came from, and a citation that cannot
-    name a page cannot open one.
+    the asynchronous form of the hybrid chunk route, so it keeps the structural
+    provenance the viewer needs -- per-chunk ``page_numbers``, ``headings``,
+    ``captions`` and ``doc_items`` -- and unlike the hierarchical route it honours
+    a token budget, so Athena does not have to re-split what Docling returns.
+    Markdown conversion is deliberately not used as a fallback: it flattens away
+    the page a passage came from, and a citation that cannot name a page cannot
+    open one.
+
+    ``chunking_use_markdown_tables`` is requested because the chunkers otherwise
+    serialize a table as triplets. Markdown rows are what makes a table that still
+    exceeds the budget splittable on row boundaries, and ``doc_items`` is what says
+    a chunk is a table in the first place: its entries are document self-references
+    such as ``#/tables/0``.
 
 ``GET {base}/v1/status/poll/{task_id}``
     Reports ``pending``, ``started``, ``success``, ``partial_success`` or
@@ -49,9 +57,11 @@ from app.parsing.errors import (
 )
 from app.parsing.segments import ConvertedDocument, DocumentSegment, build_converted_document
 
-CHUNK_ASYNC_PATH = "/v1/chunk/hierarchical/file/async"
+CHUNK_ASYNC_PATH = "/v1/chunk/hybrid/file/async"
 STATUS_PATH = "/v1/status/poll"
 RESULT_PATH = "/v1/result"
+
+_TABLE_REFERENCE_PREFIX = "#/tables/"
 
 _PENDING_STATUSES = frozenset({"pending", "started"})
 _ACCEPTED_STATUSES = frozenset({"success", "partial_success"})
@@ -135,6 +145,7 @@ class DoclingClient:
         request_timeout_seconds: float,
         deadline_seconds: float,
         poll_interval_seconds: float,
+        max_chunk_tokens: int,
     ) -> None:
         base = base_url.rstrip("/")
         self._submit_url = f"{base}{CHUNK_ASYNC_PATH}"
@@ -145,6 +156,7 @@ class DoclingClient:
         self._request_timeout_seconds = request_timeout_seconds
         self._deadline_seconds = deadline_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._max_chunk_tokens = max_chunk_tokens
 
     @property
     def name(self) -> str:
@@ -184,7 +196,13 @@ class DoclingClient:
             limit=_STATUS_RESPONSE_BYTES,
             timeout=self._request_timeout_seconds,
             files={"files": (filename, content, media_type)},
-            data={"include_converted_doc": "false"},
+            data={
+                "include_converted_doc": "false",
+                # Docling's own budget, so chunks need no re-splitting here by a
+                # splitter that cannot see the structure.
+                "chunking_max_tokens": str(self._max_chunk_tokens),
+                "chunking_use_markdown_tables": "true",
+            },
             rejected=ConversionSubmissionError(_SUBMIT_REJECTED_MESSAGE),
             route_absent=ConversionUnavailableError(_ROUTE_ABSENT_MESSAGE),
         )
@@ -428,6 +446,8 @@ def _extract_segments(payload: dict[str, Any]) -> ConvertedDocument:
                 text=text,
                 page=_first_page(raw.get("page_numbers")),
                 section=_deepest_heading(raw.get("headings")),
+                is_table=_is_table(raw.get("doc_items")),
+                caption=_first_caption(raw.get("captions")),
             )
         )
     if not segments:
@@ -445,6 +465,30 @@ def _first_page(value: Any) -> int | None:
         if isinstance(item, int) and not isinstance(item, bool) and item >= 1
     ]
     return min(pages) if pages else None
+
+
+def _is_table(value: Any) -> bool:
+    """Whether this chunk came from a table, per the converter's own references.
+
+    ``doc_items`` holds self-references such as ``#/tables/0``, so a table is
+    recognized by where its content came from, not by how it was serialized.
+    """
+    if not isinstance(value, list):
+        return False
+    return any(
+        isinstance(reference, str) and reference.startswith(_TABLE_REFERENCE_PREFIX)
+        for reference in value
+    )
+
+
+def _first_caption(value: Any) -> str:
+    """The first caption the converter attached, which names the table."""
+    if not isinstance(value, list):
+        return ""
+    for caption in value:
+        if isinstance(caption, str) and caption.strip():
+            return caption.strip()
+    return ""
 
 
 def _deepest_heading(value: Any) -> str:

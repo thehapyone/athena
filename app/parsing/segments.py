@@ -20,6 +20,10 @@ class DocumentSegment:
     text: str
     page: int | None = None
     section: str = ""
+    # Read from the converter's document structure, never inferred from the text:
+    # how a table is serialized is the converter's choice.
+    is_table: bool = False
+    caption: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,8 @@ def build_converted_document(segments: list[DocumentSegment]) -> ConvertedDocume
                 text=text,
                 page=segment.page,
                 section=clean_text(segment.section)[:MAXIMUM_SECTION_CHARACTERS],
+                is_table=segment.is_table,
+                caption=clean_text(segment.caption)[:MAXIMUM_SECTION_CHARACTERS],
             )
         )
     return ConvertedDocument(
