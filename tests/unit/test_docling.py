@@ -72,7 +72,6 @@ def client_with(
         request_timeout_seconds=120,
         deadline_seconds=deadline_seconds,
         poll_interval_seconds=poll_interval_seconds,
-        max_chunk_tokens=800,
     )
 
 
@@ -152,8 +151,11 @@ async def test_submission_posts_the_async_chunk_route_and_returns_a_task_id(
     assert b'name="files"; filename="report.pdf"' in body
     assert b"%PDF-1.7" in body
     assert b'name="include_converted_doc"' in body
-    assert b'name="chunking_max_tokens"' in body and b"800" in body
     assert b'name="chunking_use_markdown_tables"' in body
+    # The hierarchical route is used precisely because it needs no tokenizer, so
+    # no token budget is sent: sizing chunks is this service's own job.
+    assert b"chunking_max_tokens" not in body
+    assert b"/v1/chunk/hierarchical/file/async" in seen["url"].encode()
 
 
 async def test_the_converters_table_structure_is_carried_into_segments(

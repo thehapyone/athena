@@ -2,21 +2,30 @@
 
 Three endpoints of the pinned v1.30.0 contract are used:
 
-``POST {base}/v1/chunk/hybrid/file/async``
+``POST {base}/v1/chunk/hierarchical/file/async``
     Submits one file and answers ``{"task_id": ..., "task_status": ...}``. This is
-    the asynchronous form of the hybrid chunk route, so it keeps the structural
-    provenance the viewer needs -- per-chunk ``page_numbers``, ``headings``,
-    ``captions`` and ``doc_items`` -- and unlike the hierarchical route it honours
-    a token budget, so Athena does not have to re-split what Docling returns.
-    Markdown conversion is deliberately not used as a fallback: it flattens away
-    the page a passage came from, and a citation that cannot name a page cannot
-    open one.
+    the asynchronous form of the hierarchical chunk route, so it keeps the
+    structural provenance the viewer needs -- per-chunk ``page_numbers``,
+    ``headings``, ``captions`` and ``doc_items``.
 
-    ``chunking_use_markdown_tables`` is requested because the chunkers otherwise
-    serialize a table as triplets. Markdown rows are what makes a table that still
-    exceeds the budget splittable on row boundaries, and ``doc_items`` is what says
-    a chunk is a table in the first place: its entries are document self-references
-    such as ``#/tables/0``.
+    ``/v1/convert/file`` is not used instead. Its Markdown carries the same text,
+    and page boundaries can be recovered from it by setting
+    ``md_page_break_placeholder``, so the choice is not about losing pages. It is
+    that this route reports structure rather than requiring it to be re-derived:
+    a chunk's ``headings`` are its real ancestors, and its ``doc_items`` say
+    outright that it is a table. From Markdown alone a table can only be guessed
+    at from its punctuation, which is exactly the kind of guess this service must
+    not make about a service manual.
+
+    This route needs no model of its own, so a converter with no route to a model
+    host still serves it. Chunk sizing is not asked of it: the token budget belongs
+    to this service's embedding model and is applied centrally.
+
+    ``chunking_use_markdown_tables`` is requested because the chunker otherwise
+    serializes a table as triplets, which costs a large fraction of a tabular
+    document's text. Markdown rows also make an oversized table splittable on row
+    boundaries, and ``doc_items`` is what says a chunk is a table in the first
+    place: its entries are document self-references such as ``#/tables/0``.
 
 ``GET {base}/v1/status/poll/{task_id}``
     Reports ``pending``, ``started``, ``success``, ``partial_success`` or
@@ -57,7 +66,7 @@ from app.parsing.errors import (
 )
 from app.parsing.segments import ConvertedDocument, DocumentSegment, build_converted_document
 
-CHUNK_ASYNC_PATH = "/v1/chunk/hybrid/file/async"
+CHUNK_ASYNC_PATH = "/v1/chunk/hierarchical/file/async"
 STATUS_PATH = "/v1/status/poll"
 RESULT_PATH = "/v1/result"
 
@@ -145,7 +154,6 @@ class DoclingClient:
         request_timeout_seconds: float,
         deadline_seconds: float,
         poll_interval_seconds: float,
-        max_chunk_tokens: int,
     ) -> None:
         base = base_url.rstrip("/")
         self._submit_url = f"{base}{CHUNK_ASYNC_PATH}"
@@ -156,7 +164,6 @@ class DoclingClient:
         self._request_timeout_seconds = request_timeout_seconds
         self._deadline_seconds = deadline_seconds
         self._poll_interval_seconds = poll_interval_seconds
-        self._max_chunk_tokens = max_chunk_tokens
 
     @property
     def name(self) -> str:
@@ -198,9 +205,6 @@ class DoclingClient:
             files={"files": (filename, content, media_type)},
             data={
                 "include_converted_doc": "false",
-                # Docling's own budget, so chunks need no re-splitting here by a
-                # splitter that cannot see the structure.
-                "chunking_max_tokens": str(self._max_chunk_tokens),
                 "chunking_use_markdown_tables": "true",
             },
             rejected=ConversionSubmissionError(_SUBMIT_REJECTED_MESSAGE),

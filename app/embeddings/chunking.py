@@ -1,16 +1,18 @@
 """Chunking that keeps a service manual's structure retrievable.
 
-Docling reports which chunks came from a table and honours a token budget, so
-structure is never inferred from text here. What remains is the part no converter
-does: a chunk is embedded on its own, so a terse row such as
+Docling reports which chunks came from a table, so structure is never inferred
+from text here. Sizing is not delegated to it: the token budget belongs to this
+service's embedding model, and the Docling chunker that honours one needs a
+HuggingFace tokenizer at conversion time. What splitting leaves out is the part no
+converter does: a chunk is embedded on its own, so a terse row such as
 ``| E-142 | Flow sensor drift | Replace SV-3 |`` carries no trace of the manual or
 page it came from and loses to any paragraph that merely discusses flow sensors.
 Every chunk therefore opens with a provenance line, which the lexical half of
 hybrid retrieval indexes as well.
 
-Central splitting stays because plain text, Markdown, and Azure Document
-Intelligence uploads carry no table structure to read; their tables are still
-split blindly.
+Central splitting applies to every source: plain text, Markdown, and Azure
+Document Intelligence uploads carry no table structure to read, and Docling's
+hierarchical chunks follow the document's structure rather than any size limit.
 """
 
 import re

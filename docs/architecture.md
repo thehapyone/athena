@@ -51,25 +51,30 @@ answers `202 Accepted` with an Athena `job_id`, and the client polls
 only Docling's task id is persisted, which is what makes a Docling conversion
 survive an Athena restart.
 
-For Docling, Athena submits the file to `POST /v1/chunk/hybrid/file/async`,
-records the returned `task_id` on the job row before polling starts, then follows
-`GET /v1/status/poll/{task_id}` until the task settles and fetches
-`GET /v1/result/{task_id}`. Markdown-only conversion is never substituted, because
-a citation that cannot name a page cannot open one.
+For Docling, Athena submits the file to
+`POST /v1/chunk/hierarchical/file/async`, records the returned `task_id` on the
+job row before polling starts, then follows `GET /v1/status/poll/{task_id}` until
+the task settles and fetches `GET /v1/result/{task_id}`.
 
-The hybrid chunker is used rather than the hierarchical one because it honours
-`chunking_max_tokens`, which Athena sets to `ATHENA_CHUNK_SIZE`. Chunks therefore
-arrive already sized, and Athena re-splits only what a converter did not size for
-it. Two further options shape the result: `chunking_use_markdown_tables` returns
-tables as Markdown rows instead of triplets, so a table that still exceeds the
-budget can be split on row boundaries with its header repeated, and each chunk's
-`doc_items` self-references (`#/tables/0`) are what identify a table at all. Table
-structure is therefore read from the converter, never guessed from the text.
+`/v1/convert/file` is not used instead. Its Markdown holds the same text, and
+page boundaries can be recovered from it with `md_page_break_placeholder`, so the
+difference is not page provenance. It is that the chunk route *reports* structure
+instead of leaving it to be re-derived: a chunk's `headings` are its real
+ancestors and its `doc_items` state that it is a table, whereas Markdown alone
+would have a table identified by guessing from punctuation.
 
-Because the hybrid chunker counts tokens with a HuggingFace tokenizer
-(`sentence-transformers/all-MiniLM-L6-v2` by default), the Docling container needs
-that tokenizer available. A chunk budget is consequently approximate with respect
-to the embedding model's own tokenization.
+The converter is asked for document structure, not for chunk sizes. It returns
+chunks that follow the document's own hierarchy, each carrying `page_numbers`,
+`headings` and `doc_items`; sizing them for the embedding model is Athena's job
+and happens centrally, for every source alike. `chunking_use_markdown_tables`
+returns tables as Markdown rows rather than triplets, which both preserves a
+tabular document's text -- measured at 42% of one service parts list -- and lets
+an oversized table be split on row boundaries with its header repeated. Each
+chunk's `doc_items` self-references (`#/tables/0`) are what identify a table at
+all, so table structure is read from the converter, never guessed from the text.
+
+This route loads no model of its own, so Docling serves it without reaching a
+model host at conversion time.
 
 Docling's synchronous routes are deliberately unused. They answer `504` once
 `DOCLING_SERVE_MAX_SYNC_WAIT` elapses while the Docling worker keeps running,
